@@ -1,8 +1,37 @@
-# Thêm đoạn này vào ngay sau các dòng import os, sys
 import os
 import sys
+import re
+import sqlite3
+import time
+import json
+import logging
+import random
+import shutil
+import subprocess
+import platform
+import warnings
+import socket
+import uuid
+import hashlib
 
+# Third-party imports
+import requests
 import PyQt6
+# Web server imports
+try:
+    from pyngrok import ngrok, conf
+    import uvicorn
+    from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException
+    from fastapi.responses import HTMLResponse, FileResponse
+    from fastapi.middleware.cors import CORSMiddleware
+except ImportError:
+    pass
+
+from google.auth.transport.requests import Request
+from google.oauth2.credentials import Credentials
+from google_auth_oauthlib.flow import InstalledAppFlow
+from googleapiclient.discovery import build
+from googleapiclient.http import MediaFileUpload
 
 # 1. Xác định thư mục gốc của PyQt6
 qt_root = os.path.dirname(PyQt6.__file__)
@@ -34,11 +63,6 @@ else:
 # [QUAN TRỌNG] Cấu hình PATH cho macOS để tìm thấy pdflatex
 if sys.platform == 'darwin':
     os.environ['PATH'] += ':/usr/local/bin:/opt/homebrew/bin:/Library/TeX/texbin'
-# ---------------------------------------------
-
-# [QUAN TRỌNG] Cấu hình PATH cho macOS để tìm thấy pdflatex và poppler khi chạy dạng .app
-if sys.platform == 'darwin':
-    os.environ['PATH'] += ':/usr/local/bin:/opt/homebrew/bin:/Library/TeX/texbin'
 
 # Hàm lấy đường dẫn tài nguyên (Hỗ trợ PyInstaller)
 def resource_path(relative_path):
@@ -49,43 +73,10 @@ def resource_path(relative_path):
     except Exception:
         base_path = os.path.abspath(".")
     return os.path.join(base_path, relative_path)
-# Thêm vào đầu file
-import shutil
 
-# Thêm hàm dọn dẹp vào class MainApp (gọi khi closeEvent)
-def cleanup_cache(self):
-    # Chỉ xóa các file tạm, giữ lại SVG
-    if os.path.exists(CACHE_DIR):
-        for f in os.listdir(CACHE_DIR):
-            if not f.endswith(".svg"):
-                try:
-                    os.remove(os.path.join(CACHE_DIR, f))
-                except: pass
-import os
-import sys
-import re
-import sqlite3
-import time
-import json
-import logging
-import random
-import shutil
-import subprocess
-import platform
-import warnings
-import os.path
-from google.auth.transport.requests import Request
-from google.oauth2.credentials import Credentials
-from google_auth_oauthlib.flow import InstalledAppFlow
-from googleapiclient.discovery import build
-from googleapiclient.http import MediaFileUpload
 # =============================================================================
 # MODULE BẢN QUYỀN (LICENSE SYSTEM)
 # =============================================================================
-import uuid
-import platform
-import hashlib
-import requests
 from PyQt6.QtWidgets import (QDialog, QVBoxLayout, QHBoxLayout, QLabel, QLineEdit, 
                              QPushButton, QMessageBox, QRadioButton, QButtonGroup, 
                              QGroupBox, QApplication, QWidget, QCheckBox, QProgressBar, QAbstractItemView, QTimeEdit, QSizePolicy, QDialogButtonBox)
@@ -3268,7 +3259,7 @@ class AutoFormWorker(QThread):
         return requests
 
 class ExamMixer:
-    """
+    r"""
     Class xử lý trộn đề: 
     - Hỗ trợ nhận diện \True để tìm đáp án đúng.
     - Hỗ trợ cấu trúc \choice[...] có tham số tùy chọn.
@@ -4260,7 +4251,7 @@ class LatexParser:
 
     @staticmethod
     def split_question_parts(raw_tex):
-        """
+        r"""
         Phân tách câu hỏi thành: Nội dung hỏi (Stem), List đáp án (Options), Lời giải (Solution)
         Hỗ trợ cấu trúc: \choice{A}{B}{C}{D}, \choiceTF, \loigiai
         """
@@ -4556,15 +4547,6 @@ class ConnectionManager:
 
 manager = ConnectionManager()
 
-# --- ĐẢM BẢO ĐÃ IMPORT CÁC THƯ VIỆN NÀY Ở ĐẦU FILE ---
-from pyngrok import ngrok, conf
-import uvicorn
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect
-from fastapi.responses import HTMLResponse, FileResponse
-from fastapi.middleware.cors import CORSMiddleware
-import json
-import os
-import socket
 
 # --- CẬP NHẬT: WEB SERVER THREAD (FIX LỖI GMAIL CÁ NHÂN) ---
 class WebServerThread(QThread):
