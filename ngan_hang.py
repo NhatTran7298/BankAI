@@ -4565,8 +4565,14 @@ class WebServerThread(QThread):
         
         self.public_url = ""
         
-        # [ĐÃ SỬA] Thêm lại dòng này để tránh lỗi Attribute Error
-        self.ip_address = "0.0.0.0" 
+        # Tự động lấy IP mạng LAN
+        try:
+            s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            s.connect(("8.8.8.8", 80))
+            self.ip_address = s.getsockname()[0]
+            s.close()
+        except:
+            self.ip_address = "127.0.0.1"
         
         self.gg_sync = None 
         
@@ -4685,23 +4691,20 @@ class WebServerThread(QThread):
             except: pass
 
         # Kết nối Ngrok
-        MY_DOMAIN = "oncologic-premeditative-nada.ngrok-free.dev"
         try:
             ngrok.kill()
-            success = False
-            for i in range(3):
-                try:
-                    import time; time.sleep(5)
-                    self.public_url = ngrok.connect(self.port, domain=MY_DOMAIN).public_url
-                    self.server_ready.emit(self.public_url)
-                    success = True; break
-                except: pass
-            if not success:
-                self.public_url = ngrok.connect(self.port).public_url
-                self.server_ready.emit(self.public_url)
-        except Exception as e: self.server_ready.emit(f"Lỗi Ngrok: {e}")
+            # Kết nối ngrok đơn giản, không dùng domain tĩnh để tránh lỗi quyền
+            tunnel = ngrok.connect(self.port)
+            self.public_url = tunnel.public_url
+            print(f"✅ Ngrok Connected: {self.public_url}")
+            self.server_ready.emit(self.public_url)
+        except Exception as e:
+            print(f"❌ Ngrok Error: {e}")
+            self.server_ready.emit(f"Lỗi Ngrok: {str(e)}")
 
-        uvicorn.run(app, host="0.0.0.0", port=self.port, log_level="critical", proxy_headers=True)
+        # Chạy Uvicorn Server
+        # host="0.0.0.0" để cho phép truy cập từ LAN và Ngrok
+        uvicorn.run(app, host="0.0.0.0", port=self.port, log_level="info", proxy_headers=True)
 # =============================================================================
 #  MODULE GOOGLE CLASSROOM & PDF (THÊM MỚI VÀO ĐÂY)
 # =============================================================================
