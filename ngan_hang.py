@@ -4395,6 +4395,7 @@ WEB_UI_TEMPLATE = """
 
             var proto = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
             var url = proto + '//' + window.location.host + '/ws';
+            console.log("Attempting to connect to WebSocket at:", url);
             
             try {
                 ws = new WebSocket(url);
@@ -4704,7 +4705,8 @@ class WebServerThread(QThread):
 
         # Chạy Uvicorn Server
         # host="0.0.0.0" để cho phép truy cập từ LAN và Ngrok
-        uvicorn.run(app, host="0.0.0.0", port=self.port, log_level="info", proxy_headers=True)
+        # [FIX] Thêm forwarded_allow_ips='*' để sửa lỗi WebSocket 'Bad Response' qua Ngrok
+        uvicorn.run(app, host="0.0.0.0", port=self.port, log_level="info", proxy_headers=True, forwarded_allow_ips='*')
 # =============================================================================
 #  MODULE GOOGLE CLASSROOM & PDF (THÊM MỚI VÀO ĐÂY)
 # =============================================================================
