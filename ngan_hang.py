@@ -1,8 +1,49 @@
-# Thêm đoạn này vào ngay sau các dòng import os, sys
+import PyQt6.QtWidgets
+import asyncio
+import hashlib
+import json
+import logging
 import os
+import os.path
+import platform
+import random
+import re
+import requests
+import shutil
+import socket
+import sqlite3
+import subprocess
 import sys
+import time
+import uuid
+import uvicorn
+import warnings
+from PyQt6.QtCore import QMimeData, QPoint, QSize, QThread, QTime, QTimer, Qt, pyqtSignal
+from PyQt6.QtGui import (
+    QAction, QBrush, QColor, QCursor, QDrag, QFont, QIcon, QPainter, QPen, QPixmap,
+)
+from PyQt6.QtWidgets import (
+    QAbstractItemView, QApplication, QButtonGroup, QCheckBox, QComboBox, QDialog,
+    QDialogButtonBox, QFileDialog, QFrame, QGridLayout, QGroupBox, QHBoxLayout,
+    QHeaderView, QInputDialog, QLabel, QLineEdit, QListWidget, QListWidgetItem,
+    QMainWindow, QMenu, QMessageBox, QProgressBar, QProgressDialog, QPushButton,
+    QRadioButton, QScrollArea, QSizePolicy, QSpinBox, QSplashScreen, QSplitter,
+    QTabWidget, QTableWidget, QTableWidgetItem, QTextEdit, QTimeEdit, QTreeWidget,
+    QTreeWidgetItem, QVBoxLayout, QWidget
+)
+from concurrent.futures import ThreadPoolExecutor
+from datetime import datetime, timedelta
+from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse, HTMLResponse
+from google.auth.transport.requests import Request
+from google.oauth2.credentials import Credentials
+from google_auth_oauthlib.flow import InstalledAppFlow
+from googleapiclient.discovery import build
+from googleapiclient.http import MediaFileUpload
+from pathlib import Path
+from pyngrok import conf, ngrok
 
-# [QUAN TRỌNG] Cấu hình PATH cho macOS để tìm thấy pdflatex và poppler khi chạy dạng .app
 if sys.platform == 'darwin':
     os.environ['PATH'] += ':/usr/local/bin:/opt/homebrew/bin:/Library/TeX/texbin'
 
@@ -15,47 +56,10 @@ def resource_path(relative_path):
     except Exception:
         base_path = os.path.abspath(".")
     return os.path.join(base_path, relative_path)
-# Thêm vào đầu file
-import shutil
 
-# Thêm hàm dọn dẹp vào class MainApp (gọi khi closeEvent)
-def cleanup_cache(self):
-    # Chỉ xóa các file tạm, giữ lại SVG
-    if os.path.exists(CACHE_DIR):
-        for f in os.listdir(CACHE_DIR):
-            if not f.endswith(".svg"):
-                try:
-                    os.remove(os.path.join(CACHE_DIR, f))
-                except: pass
-import os
-import sys
-import re
-import sqlite3
-import time
-import json
-import logging
-import random
-import shutil
-import subprocess
-import platform
-import warnings
-import os.path
-from google.auth.transport.requests import Request
-from google.oauth2.credentials import Credentials
-from google_auth_oauthlib.flow import InstalledAppFlow
-from googleapiclient.discovery import build
-from googleapiclient.http import MediaFileUpload
 # =============================================================================
 # MODULE BẢN QUYỀN (LICENSE SYSTEM)
 # =============================================================================
-import uuid
-import platform
-import hashlib
-import requests
-from PyQt6.QtWidgets import (QDialog, QVBoxLayout, QHBoxLayout, QLabel, QLineEdit, 
-                             QPushButton, QMessageBox, QRadioButton, QButtonGroup, 
-                             QGroupBox, QApplication, QWidget, QCheckBox, QProgressBar, QAbstractItemView, QTimeEdit, QSizePolicy, QDialogButtonBox)
-from PyQt6.QtCore import Qt, QTimer, QTime
 
 # --- TẮT CẢNH BÁO GOOGLE DEPRECATED ---
 # Để console sạch sẽ, không hiện chữ đỏ lòm
@@ -300,26 +304,10 @@ os.environ['no_proxy'] = '*'
 # Tắt log rác của thư viện Google
 logging.getLogger('google.generativeai').setLevel(logging.ERROR)
 
-import pandas as pd
-# Tìm dòng from PyQt6.QtWidgets import ... và thêm QSplashScreen vào
-import PyQt6.QtWidgets
-from PyQt6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout, 
-                             QHBoxLayout, QPushButton, QLabel, QFileDialog, 
-                             QListWidget, QTextEdit, QMessageBox, QDialog,
-                             QComboBox, QListWidgetItem, QTableWidget, 
-                             QSpinBox, QTabWidget, QHeaderView, QProgressDialog, 
-                             QTreeWidget, QTreeWidgetItem, QSplitter, QLineEdit,
-                             QTableWidgetItem, QScrollArea, QFrame, QGridLayout,
-                             QGroupBox, QSplashScreen) # <--- Thêm QSplashScreen
 
-# Tìm dòng from PyQt6.QtGui import ... và thêm QPixmap, QPainter vào
-from PyQt6.QtGui import QDrag, QFont, QIcon, QColor, QAction, QBrush, QPixmap, QPainter, QPen, QCursor
-from PyQt6.QtCore import Qt, QThread, pyqtSignal, QMimeData, QPoint, QSize
 # =============================================================================
 # QUẢN LÝ API KEY CÁ NHÂN
 # =============================================================================
-import json
-from pathlib import Path
 
 API_CONFIG_FILE = Path(os.path.expanduser("~")) / "Documents" / "BankAI_Data" / "api_config.json"
 
@@ -734,7 +722,6 @@ DANH_MUC_DANG = {
 # =============================================================================
 # TEMPLATE LATEX AN TOÀN (FIX LỖI EMERGENCY STOP)
 # =============================================================================
-# Thay thế toàn bộ biến LATEX_TEMPLATE bằng đoạn này:
 LATEX_TEMPLATE = r"""
 \documentclass[12pt,a4paper]{article} % [FIX] Dùng article cho an toàn
 
@@ -920,7 +907,6 @@ class AIEngine:
 # =============================================================================
 # 3. BACKGROUND WORKERS
 # =============================================================================
-from concurrent.futures import ThreadPoolExecutor
 
 class ExamPreparerWorker(QThread):
     progress = pyqtSignal(str) 
@@ -1126,7 +1112,6 @@ class BatchAIWorker(QThread):
 
         self.finished.emit(res)
 
-# Thay thế class ImportWorker cũ
 class ImportWorker(QThread):
     progress = pyqtSignal(int, str)
     analysis_done = pyqtSignal(list, dict)  # Trả về: (Danh sách câu hỏi, Danh sách ảnh)
@@ -1413,7 +1398,6 @@ class GoogleManagerFull:
         return coursework.get('alternateLink')
 
     # --- CÁC HÀM MỚI (CHO GOOGLE FORMS & ẢNH) ---
-    # Tìm trong class GoogleManagerFull
     def upload_image(self, file_path):
         """Upload ảnh lên Drive, SET PUBLIC và trả về ID (Fix lỗi Failed to fetch)"""
         file_metadata = {'name': os.path.basename(file_path)}
@@ -1481,7 +1465,6 @@ class GoogleManagerFull:
 # 4. DATABASE BACKEND
 # =============================================================================
 class Backend:
-    # Thêm vào class Backend
     def get_dashboard_stats(self):
         """Lấy số liệu thống kê chi tiết cho Dashboard"""
         # 1. Tổng số câu toàn ngân hàng
@@ -1545,8 +1528,6 @@ class Backend:
             self.conn.commit()
         except: pass
 
-# Tìm và thay thế hàm import_tex cũ bằng đoạn này
-    # Tìm trong class Backend và thay thế hàm analyze_tex_file cũ
     def analyze_tex_file(self, path):
         """
         Phiên bản nâng cấp: Quét ID6 mọi vị trí + Tự động bóc tách Chương/Bài/Dạng chuẩn xác
@@ -1657,7 +1638,6 @@ class Backend:
             
         return added, skipped
 
-    # Cập nhật trong class Backend
     def get_all_filtered(self, g, s, c, b, l, dang, limit=None): # Thêm tham số b (bài)
         q = "SELECT * FROM questions WHERE 1=1"
         p = []
@@ -1695,7 +1675,6 @@ class Backend:
     def get_unassigned(self, limit=100):
         return [dict(r) for r in self.conn.execute("SELECT * FROM questions WHERE id6 IS NULL OR id6 = '' LIMIT ?", (limit,)).fetchall()]
         
-    # Tìm hàm này trong class Backend và thay thế toàn bộ
     def update_id6(self, qid, id6, g, s, c, l, b, d, new_content):
         """Cập nhật ID6 và Nội dung LaTeX mới vào Database"""
         query = """
@@ -2344,7 +2323,6 @@ class DatabaseManager:
         conn.close()
         return rows
     
-    # Tìm trong class DatabaseManager và thay thế hàm auto_scan_metadata cũ
     @staticmethod
     def auto_scan_metadata(db_path):
         """Quét lại toàn bộ DB để cập nhật cột 'bai', 'dang', 'id6' từ nội dung TeX"""
@@ -2410,14 +2388,6 @@ class DatabaseManager:
 # =============================================================================
 # WIDGET SOẠN BÀI: GIAO DIỆN CHUẨN (GIỐNG SOẠN ĐỀ THỦ CÔNG)
 # =============================================================================
-from PyQt6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout, 
-                             QHBoxLayout, QPushButton, QLabel, QFileDialog, 
-                             QListWidget, QTextEdit, QMessageBox, QDialog,
-                             QComboBox, QListWidgetItem, QTableWidget, 
-                             QSpinBox, QTabWidget, QHeaderView, QProgressDialog, 
-                             QTreeWidget, QTreeWidgetItem, QSplitter, QLineEdit,
-                             QTableWidgetItem, QScrollArea, QFrame, QGridLayout,
-                             QGroupBox, QSplashScreen, QMenu, QInputDialog) # <--- THÊM QMenu VÀO ĐÂY
 
 # =============================================================================
 # WIDGET SOẠN BÀI (ĐÃ FIX LỖI NameError VÀ ĐỒNG BỘ DATA_ID6_2025)
@@ -3900,19 +3870,6 @@ class FileCleanerDialog(QDialog):
 # =============================================================================
 # MODULE WEB SERVER FIX FINAL: CENTER, TRUE, IMAGES
 # =============================================================================
-import uvicorn
-import subprocess
-import hashlib
-import re
-import os
-import json
-import sqlite3
-from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
-from fastapi.responses import HTMLResponse, FileResponse
-from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import HTMLResponse, FileResponse
-from fastapi.middleware.cors import CORSMiddleware
-from PyQt6.QtCore import QThread
 
 # --- CẤU HÌNH ---
 CACHE_DIR = os.path.join(os.path.expanduser("~"), ".bankai_cache")
@@ -4481,9 +4438,6 @@ WEB_UI_TEMPLATE = """
 # CẬP NHẬT WEB SERVER THREAD (TỰ ĐỘNG TÌM PORT TRỐNG)
 # =============================================================================
 # --- CẬP NHẬT: WEB SERVER FIX LỖI TIẾNG VIỆT & KẾT NỐI ---
-import json
-import asyncio
-import socket
 
 class ConnectionManager:
     def __init__(self):
@@ -4523,14 +4477,6 @@ class ConnectionManager:
 manager = ConnectionManager()
 
 # --- ĐẢM BẢO ĐÃ IMPORT CÁC THƯ VIỆN NÀY Ở ĐẦU FILE ---
-from pyngrok import ngrok, conf
-import uvicorn
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect
-from fastapi.responses import HTMLResponse, FileResponse
-from fastapi.middleware.cors import CORSMiddleware
-import json
-import os
-import socket
 
 # --- CẬP NHẬT: WEB SERVER THREAD (FIX LỖI GMAIL CÁ NHÂN) ---
 class WebServerThread(QThread):
@@ -4899,8 +4845,6 @@ class StatisticsDashboard(QDialog):
 # =============================================================================
 # MODULE TỰ ĐỘNG HÓA (AUTO SCHEDULER)
 # =============================================================================
-import json
-from datetime import datetime, timedelta
 
 class SchedulerManager:
     """Quản lý danh sách các bài tập đã lên lịch"""
@@ -6529,53 +6473,8 @@ class MainApp(QMainWindow):
                 else:
                     self.mat_tb.setRowHidden(r, True)
 
-    def calc_mat_sum(self):
-        """Tính tổng số câu (Bỏ qua các dòng tiêu đề không có Spinbox)"""
-        s1 = s2 = s3 = 0
-        for r in range(self.mat_tb.rowCount()):
-            # Kiểm tra xem dòng này có widget nhập liệu ở cột 1 không
-            # Nếu không có (là dòng Header phân cách), thì bỏ qua
-            if not self.mat_tb.cellWidget(r, 1):
-                continue
 
-            s1 += sum(self.mat_tb.cellWidget(r, c).value() for c in range(1, 4))
-            s2 += sum(self.mat_tb.cellWidget(r, c).value() for c in range(4, 7))
-            s3 += sum(self.mat_tb.cellWidget(r, c).value() for c in range(7, 10))
-            
-        self.mat_sum.setText(f"<b>TỔNG SỐ CÂU:</b> "
-                             f"P1: <span style='color:blue; font-size:16px'>{s1}</span> | "
-                             f"P2: <span style='color:orange; font-size:16px'>{s2}</span> | "
-                             f"P3: <span style='color:purple; font-size:16px'>{s3}</span>")
 
-    def quick_fill_matrix(self):
-        """Copy dòng đầu tiên có dữ liệu xuống các dòng dưới"""
-        first_visible_row = -1
-        values = {}
-        
-        # 1. Tìm dòng mẫu (dòng CÓ WIDGET đầu tiên đang hiện)
-        for r in range(self.mat_tb.rowCount()):
-            if not self.mat_tb.isRowHidden(r) and self.mat_tb.cellWidget(r, 1):
-                first_visible_row = r
-                for c in range(1, 10):
-                    values[c] = self.mat_tb.cellWidget(r, c).value()
-                break
-        
-        if first_visible_row == -1: return
-
-        # 2. Áp dụng
-        for r in range(self.mat_tb.rowCount()):
-            if not self.mat_tb.isRowHidden(r) and r != first_visible_row and self.mat_tb.cellWidget(r, 1):
-                for c in range(1, 10):
-                    self.mat_tb.cellWidget(r, c).setValue(values[c])
-        
-        QMessageBox.information(self, "Xong", "Đã sao chép cấu hình!")
-
-    def reset_matrix_values(self):
-        """Xóa trắng (Bỏ qua header)"""
-        for r in range(self.mat_tb.rowCount()):
-            if not self.mat_tb.isRowHidden(r) and self.mat_tb.cellWidget(r, 1):
-                for c in range(1, 10):
-                    self.mat_tb.cellWidget(r, c).setValue(0)
 
     def open_stats_dashboard(self):
         """Mở cửa sổ thống kê chi tiết"""
@@ -6615,9 +6514,6 @@ class MainApp(QMainWindow):
                     self.mat_tb.cellWidget(r, c).setValue(0)
 
     # --- HÀM SLOT MỞ HỘP THOẠI ---
-    def open_image_manager(self):
-        dlg = ImageManagerDialog(self)
-        dlg.exec()
 
     # --- [MỚI] HÀM MỞ CỬA SỔ SOẠN BÀI ---
     def open_lesson_planner(self):
@@ -6634,7 +6530,6 @@ class MainApp(QMainWindow):
         self.planner_window.show()
 
     # ... (Giữ nguyên các hàm create_home_tab, create_manual_tab, create_matrix_tab, create_ai_tab ...)
-    # Lưu ý: Copy lại các hàm đó vào đây nếu bạn xóa nhầm, hoặc chỉ cần paste đoạn code bên dưới vào cuối class MainApp
     
     def create_home_tab(self):
         """Trang chủ: Dashboard với nền Watermark"""
@@ -6804,8 +6699,6 @@ class MainApp(QMainWindow):
         l.addWidget(lw, 4); l.addWidget(rw, 4)
         return w
 
-    # Thêm hàm này vào trong class MainApp
-    # Tìm và thay thế hàm này trong class MainApp
     def upload_from_manual_tab(self):
         """
         Đồng bộ chức năng: Hiển thị Menu chọn (Upload PDF hoặc Thi Online)
@@ -6845,7 +6738,6 @@ class MainApp(QMainWindow):
             # Vì ta đang ở Tab 1 (Soạn thủ công), nó sẽ tự động lấy câu hỏi từ exam_lst
             self.create_online_classroom_exam()
 
-# Thay thế hàm create_matrix_tab trong class MainApp
     def create_matrix_tab(self):
         """Tab tạo đề Ma trận - Giao diện Launchpad"""
         w = QWidget()
@@ -6924,9 +6816,7 @@ class MainApp(QMainWindow):
                 QMessageBox.information(self, "Thành công", f"Đã chuyển {len(questions)} câu hỏi sang danh sách 'Đề đang soạn'.")
 
     # =========================================================================
-    # 2. HÀM MỞ THƯ VIỆN (Thêm mới ngay bên dưới hàm trên)
     # =========================================================================
-    # Tìm hàm open_template_lib cũ và thay thế bằng hàm này:
     def open_template_lib(self):
         """Mở dialog thư viện mẫu và tự động điền ma trận"""
         # Kiểm tra xem người dùng đã chọn chương nào chưa
@@ -7183,7 +7073,6 @@ class MainApp(QMainWindow):
         self.current_exam = [self.exam_lst.item(i).data(Qt.ItemDataRole.UserRole) for i in range(self.exam_lst.count())]
         QMessageBox.information(self,"OK",f"Lưu {len(self.current_exam)} câu")
 
-    # Thay thế hàm upd_mat
     def upd_mat(self):
         # 1. Xác định Danh sách Lớp & Môn cần hiển thị
         target_grades = []
@@ -7285,7 +7174,6 @@ class MainApp(QMainWindow):
                              f"P2: <span style='color:orange; font-size:16px'>{s2}</span> | "
                              f"P3: <span style='color:purple; font-size:16px'>{s3}</span>")
 
-    # Cập nhật hàm gen_mat
     def gen_mat(self):
         self.current_exam = []; self.mat_res.clear()
         
@@ -7366,9 +7254,6 @@ class MainApp(QMainWindow):
                 rt.addChild(ch)
             self.ai_tr.addTopLevelItem(rt); self.ai_tr.expandAll()
 
-# Tìm và thay thế hàm import_files cũ bằng đoạn này
-    # Tìm đến hàm import_files cũ và thay thế bằng hàm này:
-    # Sửa trong MainApp
     def import_files(self):
         fs, _ = QFileDialog.getOpenFileNames(self, "Chọn file TeX", "", "TeX (*.tex)")
         if not fs: return
@@ -7430,8 +7315,6 @@ class MainApp(QMainWindow):
         dlg = ImageManagerDialog(self.bk, self)
         dlg.exec()
 
-    # Thêm hàm xử lý khi nhập xong (ngay bên dưới import_files)
-    # Sửa lại hàm này trong class MainApp
     def on_import_finished(self, added, skipped, detected_images):
         self.pd_import.close()
         self.load_stats()
@@ -7506,8 +7389,6 @@ class MainApp(QMainWindow):
         with open(path, "w", encoding="utf-8") as f: f.write(LATEX_TEMPLATE + "\n".join(c) + "\n\\end{document}")
         QMessageBox.information(self,"OK","Exported")
 
-    # --- SỬA LỖI: CÁC HÀM NÀY PHẢI NẰM TRONG CLASS MainApp ---
-    # --- Dán vào trong class MainApp ---
     
     def mix_and_export(self):
         """Hàm gọi dialog cấu hình và thực hiện trộn đề"""
@@ -7585,7 +7466,6 @@ class MainApp(QMainWindow):
         dlg = FileCleanerDialog(self.ai, self)
         dlg.exec()
 
-    # Trong class MainApp
     def toggle_web_server(self):
         """Bật/Tắt Web Server - Fix lỗi tự chạy khi chưa bấm OK"""
         if self.btn_web.isChecked():
@@ -7821,7 +7701,6 @@ class MainApp(QMainWindow):
         except Exception as e:
             QMessageBox.critical(self, "Lỗi", str(e))
 
-    # Thêm vào trong class MainApp
     def show_classroom_menu(self):
         """Menu chọn chế độ khi bấm nút Google Classroom"""
         menu = QMenu(self)
@@ -8000,6 +7879,19 @@ class MainApp(QMainWindow):
 # =============================================================================
 # AI CLONER - ĐÃ TÁCH RA KHỎI MAINAPP
 # =============================================================================
+    def cleanup_cache(self):
+        # Chỉ xóa các file tạm, giữ lại SVG
+        if os.path.exists(CACHE_DIR):
+            for f in os.listdir(CACHE_DIR):
+                if not f.endswith(".svg"):
+                    try:
+                        os.remove(os.path.join(CACHE_DIR, f))
+                    except: pass
+
+    def closeEvent(self, event):
+        self.cleanup_cache()
+        super().closeEvent(event)
+
 class AIClonerDialog(QDialog):
     """Dialog tạo biến thể câu hỏi bằng AI"""
     def __init__(self, ai_engine, base_question, parent=None):
