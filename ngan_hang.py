@@ -1,8 +1,43 @@
-# Thêm đoạn này vào ngay sau các dòng import os, sys
 import os
 import sys
-
+import re
+import sqlite3
+import time
+import json
+import logging
+import random
+import shutil
+import subprocess
+import platform
+import warnings
+import socket
+import uuid
+import hashlib
+# --- THÊM DÒNG NÀY ĐỂ SỬA LỖI ---
+from PyQt6.QtWebEngineCore import QWebEngineSettings
+# Third-party imports
+import requests
 import PyQt6
+# Web server imports
+try:
+    from pyngrok import ngrok, conf
+    import uvicorn
+    from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException
+    from fastapi.responses import HTMLResponse, FileResponse
+    from fastapi.middleware.cors import CORSMiddleware
+except ImportError:
+    pass
+
+from google.auth.transport.requests import Request
+from google.oauth2.credentials import Credentials
+from google_auth_oauthlib.flow import InstalledAppFlow
+from googleapiclient.discovery import build
+from googleapiclient.http import MediaFileUpload
+
+# Thêm vào cùng nhóm với các import PyQt6 hiện có
+from PyQt6.QtWebEngineWidgets import QWebEngineView
+from PyQt6.QtWebChannel import QWebChannel
+from PyQt6.QtCore import QObject, pyqtSlot, QUrl
 
 # 1. Xác định thư mục gốc của PyQt6
 qt_root = os.path.dirname(PyQt6.__file__)
@@ -34,11 +69,6 @@ else:
 # [QUAN TRỌNG] Cấu hình PATH cho macOS để tìm thấy pdflatex
 if sys.platform == 'darwin':
     os.environ['PATH'] += ':/usr/local/bin:/opt/homebrew/bin:/Library/TeX/texbin'
-# ---------------------------------------------
-
-# [QUAN TRỌNG] Cấu hình PATH cho macOS để tìm thấy pdflatex và poppler khi chạy dạng .app
-if sys.platform == 'darwin':
-    os.environ['PATH'] += ':/usr/local/bin:/opt/homebrew/bin:/Library/TeX/texbin'
 
 # Hàm lấy đường dẫn tài nguyên (Hỗ trợ PyInstaller)
 def resource_path(relative_path):
@@ -49,43 +79,10 @@ def resource_path(relative_path):
     except Exception:
         base_path = os.path.abspath(".")
     return os.path.join(base_path, relative_path)
-# Thêm vào đầu file
-import shutil
 
-# Thêm hàm dọn dẹp vào class MainApp (gọi khi closeEvent)
-def cleanup_cache(self):
-    # Chỉ xóa các file tạm, giữ lại SVG
-    if os.path.exists(CACHE_DIR):
-        for f in os.listdir(CACHE_DIR):
-            if not f.endswith(".svg"):
-                try:
-                    os.remove(os.path.join(CACHE_DIR, f))
-                except: pass
-import os
-import sys
-import re
-import sqlite3
-import time
-import json
-import logging
-import random
-import shutil
-import subprocess
-import platform
-import warnings
-import os.path
-from google.auth.transport.requests import Request
-from google.oauth2.credentials import Credentials
-from google_auth_oauthlib.flow import InstalledAppFlow
-from googleapiclient.discovery import build
-from googleapiclient.http import MediaFileUpload
 # =============================================================================
 # MODULE BẢN QUYỀN (LICENSE SYSTEM)
 # =============================================================================
-import uuid
-import platform
-import hashlib
-import requests
 from PyQt6.QtWidgets import (QDialog, QVBoxLayout, QHBoxLayout, QLabel, QLineEdit, 
                              QPushButton, QMessageBox, QRadioButton, QButtonGroup, 
                              QGroupBox, QApplication, QWidget, QCheckBox, QProgressBar, QAbstractItemView, QTimeEdit, QSizePolicy, QDialogButtonBox)
@@ -378,149 +375,94 @@ def save_api_key(key):
 # 0. STYLE SHEET (GIAO DIỆN HIỆN ĐẠI)
 # =============================================================================
 APP_STYLE = """
-/* Tổng thể ứng dụng */
+/* TỔNG THỂ */
 QMainWindow {
-    background-color: #f4f6f9;
+    background: qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 #1a0f0a, stop:1 #2c1810);
 }
+
 QWidget {
-    font-family: 'Segoe UI', Arial, sans-serif;
-    font-size: 14px;
-    color: #2c3e50;
+    color: #f5f5f7;
+    font-family: 'SF Pro Display', 'Segoe UI', sans-serif;
 }
 
-/* Tab Widget */
-QTabWidget::pane {
-    border: 1px solid #dcdde1;
-    background: white;
-    border-radius: 6px;
-    top: -1px; 
-}
-QTabBar::tab {
-    background: #ecf0f1;
-    border: 1px solid #dcdde1;
-    padding: 10px 20px;
-    margin-right: 4px;
-    border-top-left-radius: 6px;
-    border-top-right-radius: 6px;
-    font-weight: bold;
-    color: #7f8c8d;
-}
-QTabBar::tab:selected {
-    background: white;
-    border-bottom-color: white;
-    color: #2980b9;
+/* HIỆU ỨNG GLASS CARD */
+QFrame#StatCard {
+    background-color: rgba(255, 255, 255, 0.05);
+    border: 1px solid rgba(255, 255, 255, 0.1);
+    border-radius: 15px;
 }
 
-/* Các nút bấm (Buttons) */
-QPushButton {
-    background-color: #ffffff;
-    border: 1px solid #bdc3c7;
-    border-radius: 6px;
-    padding: 8px 16px;
-    font-weight: 600;
-    color: #2c3e50;
-}
-QPushButton:hover {
-    background-color: #ecf0f1;
-    border-color: #95a5a6;
-}
-QPushButton:pressed {
-    background-color: #bdc3c7;
-}
-
-/* Nút chính (Primary - Blue) */
-QPushButton[class="btn-primary"] {
-    background-color: #3498db;
-    color: white;
-    border: none;
-}
-QPushButton[class="btn-primary"]:hover {
-    background-color: #2980b9;
-}
-
-/* Nút thành công (Success - Green) */
-QPushButton[class="btn-success"] {
-    background-color: #2ecc71;
-    color: white;
-    border: none;
-}
-QPushButton[class="btn-success"]:hover {
-    background-color: #27ae60;
-}
-
-/* Nút cảnh báo/xóa (Danger - Red) */
-QPushButton[class="btn-danger"] {
-    background-color: #e74c3c;
-    color: white;
-    border: none;
-}
-QPushButton[class="btn-danger"]:hover {
-    background-color: #c0392b;
-}
-
-/* Nút cam (Warning) */
-QPushButton[class="btn-warning"] {
-    background-color: #f39c12;
-    color: white;
-    border: none;
-}
-QPushButton[class="btn-warning"]:hover {
-    background-color: #d35400;
-}
-
-/* Input Fields & Combo Boxes */
-QLineEdit, QComboBox, QSpinBox {
-    padding: 6px;
-    border: 1px solid #bdc3c7;
-    border-radius: 4px;
-    background-color: white;
-    selection-background-color: #3498db;
-}
-QLineEdit:focus, QComboBox:focus, QSpinBox:focus {
-    border: 1px solid #3498db;
-}
-
-/* Tables & Lists */
-QTableWidget, QListWidget, QTreeWidget {
-    background-color: white;
-    border: 1px solid #dcdde1;
-    border-radius: 6px;
-    gridline-color: #ecf0f1;
-    selection-background-color: #3498db;
-    selection-color: white;
-}
-QHeaderView::section {
-    background-color: #ecf0f1;
-    padding: 8px;
-    border: none;
-    font-weight: bold;
-    color: #2c3e50;
-    border-bottom: 2px solid #bdc3c7;
-    border-right: 1px solid #bdc3c7;
-}
-
-/* Group Box */
 QGroupBox {
+    background-color: rgba(255, 255, 255, 0.03);
+    border: 1px solid rgba(255, 255, 255, 0.1);
+    border-radius: 12px;
+    margin-top: 20px;
     font-weight: bold;
-    border: 1px solid #bdc3c7;
-    border-radius: 6px;
-    margin-top: 12px;
-    padding-top: 15px;
-    background-color: #ffffff;
-}
-QGroupBox::title {
-    subcontrol-origin: margin;
-    subcontrol-position: top left;
-    padding: 0 5px;
-    left: 10px;
-    color: #2980b9;
+    color: #e67e22;
+    padding: 15px;
 }
 
-/* Text Edit */
-QTextEdit {
-    border: 1px solid #bdc3c7;
-    border-radius: 6px;
-    background-color: #fdfdfd;
+/* INPUTS & CONTROLS */
+QLineEdit, QComboBox, QSpinBox, QTextEdit {
+    background-color: rgba(0, 0, 0, 0.3);
+    border: 1px solid rgba(255, 255, 255, 0.1);
+    border-radius: 8px;
+    padding: 8px;
+    color: white;
+    selection-background-color: #d35400;
+}
+
+QLineEdit:focus {
+    border: 1px solid #d35400;
+}
+
+/* BUTTONS NATIVE GLASS */
+QPushButton {
+    background-color: rgba(211, 84, 0, 0.15);
+    border: 1px solid rgba(211, 84, 0, 0.3);
+    border-radius: 10px;
+    padding: 10px 20px;
+    font-weight: 600;
+    color: #f5f5f7;
+}
+
+QPushButton:hover {
+    background-color: #d35400;
+    border: 1px solid #e67e22;
+}
+
+QPushButton[class="btn-primary"] {
+    background-color: #d35400;
+    color: white;
+}
+
+/* PROGRESS BAR HIỆU ỨNG CAPACITY */
+QProgressBar {
+    background-color: rgba(0, 0, 0, 0.5);
+    border-radius: 5px;
+    text-align: center;
+    border: none;
+}
+
+QProgressBar::chunk {
+    background: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 #d35400, stop:1 #e67e22);
+    border-radius: 5px;
+}
+
+/* TABLES & TREES */
+QTableWidget, QTreeWidget, QListWidget {
+    background-color: rgba(0, 0, 0, 0.2);
+    border: 1px solid rgba(255, 255, 255, 0.05);
+    gridline-color: rgba(255, 255, 255, 0.05);
+    border-radius: 10px;
+}
+
+QHeaderView::section {
+    background-color: rgba(255, 255, 255, 0.05);
+    color: #e67e22;
+    padding: 10px;
+    border: none;
+    font-weight: bold;
 }
 """
 
@@ -1509,8 +1451,77 @@ class GoogleManagerFull:
 
     def batch_update_form(self, form_id, requests):
         """Gửi lệnh cập nhật form (thêm câu hỏi hàng loạt)"""
-        body = {'requests': requests}
-        self.service_forms.forms().batchUpdate(formId=form_id, body=body).execute()
+        # Chia nhỏ request nếu quá lớn (Google giới hạn khoảng 100 request/batch)
+        chunk_size = 50
+        for i in range(0, len(requests), chunk_size):
+            chunk = requests[i:i + chunk_size]
+            body = {'requests': chunk}
+            self.service_forms.forms().batchUpdate(formId=form_id, body=body).execute()
+
+    def generate_form_requests(self, questions_data):
+        """
+        Tạo danh sách request cho Google Forms API từ dữ liệu câu hỏi
+        questions_data: List of dicts: {'image_id': '...', 'key': 'A', 'idx': 1}
+        """
+        requests = []
+        index = 0
+        
+        for q in questions_data:
+            # 1. Image Item (Nội dung câu hỏi dạng ảnh)
+            # URL đặc biệt để Google Forms load được ảnh từ Drive (Public)
+            img_url = f"https://drive.google.com/uc?export=view&id={q['image_id']}"
+            
+            requests.append({
+                "createItem": {
+                    "item": {
+                        "title": f"Câu {q['idx']}",
+                        "imageItem": {
+                            "image": {
+                                "sourceUri": img_url
+                            }
+                        }
+                    },
+                    "location": { "index": index }
+                }
+            })
+            index += 1
+            
+            # 2. Question Item (Các phương án trả lời)
+            correct_val = str(q.get('key', 'A')).upper()
+            if correct_val not in ['A', 'B', 'C', 'D']: correct_val = 'A' # Fallback
+            
+            options = [{"value": c} for c in ['A', 'B', 'C', 'D']]
+
+            # Logic chấm điểm (Grading)
+            grading = {
+                "pointValue": 1, # Mặc định 1 điểm/câu (Google Forms tự chia)
+                "correctAnswers": {
+                    "answers": [{"value": correct_val}]
+                }
+            }
+
+            requests.append({
+                "createItem": {
+                    "item": {
+                        "title": "Chọn đáp án đúng:",
+                        "questionItem": {
+                            "question": {
+                                "required": True,
+                                "grading": grading,
+                                "choiceQuestion": {
+                                    "type": "RADIO",
+                                    "options": options,
+                                    "shuffle": False
+                                }
+                            }
+                        }
+                    },
+                    "location": { "index": index }
+                }
+            })
+            index += 1
+            
+        return requests
 # =============================================================================
 # 4. DATABASE BACKEND
 # =============================================================================
@@ -3032,6 +3043,88 @@ class ClassroomDialog(QDialog):
         self.worker.start()
         self.btn_upload.setEnabled(False)
 
+class FormGenWorker(QThread):
+    """Worker chuyên biệt để tạo đề thi Google Forms từ ảnh LaTeX"""
+    progress = pyqtSignal(int, str)
+    finished = pyqtSignal(str) # Return URL
+    error = pyqtSignal(str)
+
+    def __init__(self, google_mgr, questions, title, description, course_id):
+        super().__init__()
+        self.gg = google_mgr
+        self.qs = questions
+        self.title = title
+        self.desc = description
+        self.cid = course_id
+
+    def run(self):
+        import time
+        try:
+            self.progress.emit(5, "Đang khởi tạo Google Form...")
+            # 1. Tạo Form Quiz Trống
+            form_id, form_url = self.gg.create_quiz_form(self.title, self.desc)
+            
+            # 2. Render và Upload từng câu
+            processed_qs = []
+            total = len(self.qs)
+            
+            for i, q in enumerate(self.qs):
+                if self.isInterruptionRequested(): return
+                
+                # Update progress
+                p = 10 + int((i / total) * 70)
+                self.progress.emit(p, f"Đang xử lý câu {i+1}/{total} (Render & Upload)...")
+                
+                # Render Image
+                content = q.get('content_tex', q.get('content', ''))
+                # Đặt tên file tạm
+                temp_name = f"q_{int(time.time())}_{i}"
+                img_path = ImageCompiler.compile_question_to_png(content, temp_name)
+                
+                if not img_path:
+                    print(f"⚠️ Lỗi render câu {i+1}, bỏ qua.")
+                    continue
+                    
+                # Upload lên Drive
+                img_id = self.gg.upload_image(img_path)
+                
+                processed_qs.append({
+                    'idx': i + 1,
+                    'image_id': img_id,
+                    'key': q.get('key', '?')
+                })
+                
+                # Xóa file tạm
+                try: os.remove(img_path)
+                except: pass
+
+            # 3. Cập nhật Form
+            self.progress.emit(85, "Đang cấu hình câu hỏi vào Form...")
+            if processed_qs:
+                reqs = self.gg.generate_form_requests(processed_qs)
+                self.gg.batch_update_form(form_id, reqs)
+            
+            self.progress.emit(95, "Đang đăng bài lên Classroom...")
+            
+            # 4. Đăng lên Classroom
+            link_share = {'link': {'url': form_url, 'title': f"BÀI THI: {self.title}"}}
+            body = {
+                'title': self.title,
+                'description': f"{self.desc}\n\n📝 Link bài thi trắc nghiệm: {form_url}",
+                'workType': 'ASSIGNMENT', 
+                'state': 'PUBLISHED', 
+                'maxPoints': 10,
+                'materials': [link_share]
+            }
+            self.gg.service_class.courses().courseWork().create(courseId=self.cid, body=body).execute()
+            
+            self.finished.emit(form_url)
+            
+        except Exception as e:
+            import traceback
+            traceback.print_exc()
+            self.error.emit(str(e))
+
 class AutoFormWorker(QThread):
     progress = pyqtSignal(int, str)
     finished = pyqtSignal(str)
@@ -3268,7 +3361,7 @@ class AutoFormWorker(QThread):
         return requests
 
 class ExamMixer:
-    """
+    r"""
     Class xử lý trộn đề: 
     - Hỗ trợ nhận diện \True để tìm đáp án đúng.
     - Hỗ trợ cấu trúc \choice[...] có tham số tùy chọn.
@@ -4260,7 +4353,7 @@ class LatexParser:
 
     @staticmethod
     def split_question_parts(raw_tex):
-        """
+        r"""
         Phân tách câu hỏi thành: Nội dung hỏi (Stem), List đáp án (Options), Lời giải (Solution)
         Hỗ trợ cấu trúc: \choice{A}{B}{C}{D}, \choiceTF, \loigiai
         """
@@ -4404,6 +4497,7 @@ WEB_UI_TEMPLATE = """
 
             var proto = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
             var url = proto + '//' + window.location.host + '/ws';
+            console.log("Attempting to connect to WebSocket at:", url);
             
             try {
                 ws = new WebSocket(url);
@@ -4556,15 +4650,6 @@ class ConnectionManager:
 
 manager = ConnectionManager()
 
-# --- ĐẢM BẢO ĐÃ IMPORT CÁC THƯ VIỆN NÀY Ở ĐẦU FILE ---
-from pyngrok import ngrok, conf
-import uvicorn
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect
-from fastapi.responses import HTMLResponse, FileResponse
-from fastapi.middleware.cors import CORSMiddleware
-import json
-import os
-import socket
 
 # --- CẬP NHẬT: WEB SERVER THREAD (FIX LỖI GMAIL CÁ NHÂN) ---
 class WebServerThread(QThread):
@@ -4583,8 +4668,14 @@ class WebServerThread(QThread):
         
         self.public_url = ""
         
-        # [ĐÃ SỬA] Thêm lại dòng này để tránh lỗi Attribute Error
-        self.ip_address = "0.0.0.0" 
+        # Tự động lấy IP mạng LAN
+        try:
+            s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            s.connect(("8.8.8.8", 80))
+            self.ip_address = s.getsockname()[0]
+            s.close()
+        except:
+            self.ip_address = "127.0.0.1"
         
         self.gg_sync = None 
         
@@ -4703,23 +4794,21 @@ class WebServerThread(QThread):
             except: pass
 
         # Kết nối Ngrok
-        MY_DOMAIN = "oncologic-premeditative-nada.ngrok-free.dev"
         try:
             ngrok.kill()
-            success = False
-            for i in range(3):
-                try:
-                    import time; time.sleep(5)
-                    self.public_url = ngrok.connect(self.port, domain=MY_DOMAIN).public_url
-                    self.server_ready.emit(self.public_url)
-                    success = True; break
-                except: pass
-            if not success:
-                self.public_url = ngrok.connect(self.port).public_url
-                self.server_ready.emit(self.public_url)
-        except Exception as e: self.server_ready.emit(f"Lỗi Ngrok: {e}")
+            # Kết nối ngrok đơn giản, không dùng domain tĩnh để tránh lỗi quyền
+            tunnel = ngrok.connect(self.port)
+            self.public_url = tunnel.public_url
+            print(f"✅ Ngrok Connected: {self.public_url}")
+            self.server_ready.emit(self.public_url)
+        except Exception as e:
+            print(f"❌ Ngrok Error: {e}")
+            self.server_ready.emit(f"Lỗi Ngrok: {str(e)}")
 
-        uvicorn.run(app, host="0.0.0.0", port=self.port, log_level="critical", proxy_headers=True)
+        # Chạy Uvicorn Server
+        # host="0.0.0.0" để cho phép truy cập từ LAN và Ngrok
+        # [FIX] Thêm forwarded_allow_ips='*' để sửa lỗi WebSocket 'Bad Response' qua Ngrok
+        uvicorn.run(app, host="0.0.0.0", port=self.port, log_level="info", proxy_headers=True, forwarded_allow_ips='*')
 # =============================================================================
 #  MODULE GOOGLE CLASSROOM & PDF (THÊM MỚI VÀO ĐÂY)
 # =============================================================================
@@ -6118,6 +6207,51 @@ class MatrixEditorDialog(QDialog):
             return
         self.accept()
 
+class UIBridge(QObject):
+    """Cầu nối xử lý logic giữa Giao diện Dashboard và Python"""
+    def __init__(self, backend, parent=None): 
+        super().__init__(parent)
+        self.bk = backend
+        self.main_app = parent # Tham chiếu đến cửa sổ chính để điều khiển Tab
+
+    # 1. HÀM LẤY SỐ LIỆU (Để Dashboard hiển thị)
+    @pyqtSlot(result=str)
+    def get_dashboard_data(self):
+        try:
+            # Lấy số liệu thực tế từ Database
+            total_q = self.bk.count_all_questions() if hasattr(self.bk, 'count_all_questions') else 0
+            # Giả lập các số liệu khác (hoặc lấy từ DB nếu có hàm)
+            data = {
+                "total": total_q,      
+                "exams": 85,          
+                "students": 24,       
+                "ai_requests": 1205
+            }
+            return json.dumps(data)
+        except Exception as e:
+            print(f"Lỗi lấy dữ liệu: {e}")
+            return json.dumps({"total": "N/A"})
+
+    # 2. HÀM CHUYỂN TAB (Để các nút Sidebar hoạt động)
+    @pyqtSlot(int)
+    def switch_tab(self, index):
+        """Chuyển sang tab tương ứng trong QTabWidget"""
+        if self.main_app and hasattr(self.main_app, 'stack'):
+            print(f"Chuyển sang tab số: {index}")
+            self.main_app.stack.setCurrentIndex(index)
+
+    # 3. HÀM MỞ CHỨC NĂNG CỤ THỂ
+    @pyqtSlot()
+    def open_create_exam(self):
+        """Mở tab tạo đề (Ví dụ tab số 2)"""
+        self.switch_tab(2) 
+        
+    @pyqtSlot()
+    def open_settings(self):
+        """Mở hộp thoại cài đặt"""
+        # self.main_app.open_settings_dialog() # Nếu có hàm này
+        print("Mở cài đặt...")
+
 class MainApp(QMainWindow):
     def apply_theme(self):
         """
@@ -6387,7 +6521,13 @@ class MainApp(QMainWindow):
         self.setWindowTitle("BankAI Pro - 2025 Matrix Edition")
         self.setGeometry(100, 100, 1400, 900)
         self.setStyleSheet(APP_STYLE)
-        
+        # --- THÊM ĐOẠN NÀY ---
+        # Khởi tạo Cầu nối
+        self.bridge = UIBridge(self.bk, self)
+        self.channel = QWebChannel()
+        self.channel.registerObject("py_bridge", self.bridge)
+        # ---------------------
+
         w = QWidget(); self.setCentralWidget(w); l = QVBoxLayout(w)
         l.addWidget(self.create_toolbar())
         
@@ -6673,62 +6813,8 @@ class MainApp(QMainWindow):
     # Lưu ý: Copy lại các hàm đó vào đây nếu bạn xóa nhầm, hoặc chỉ cần paste đoạn code bên dưới vào cuối class MainApp
     
     def create_home_tab(self):
-        """Trang chủ: Dashboard với nền Watermark"""
-        # [THAY ĐỔI] Sử dụng WatermarkWidget thay vì QWidget thường
-        w = WatermarkWidget("BANKAI PRO 2025") 
-        
-        main_layout = QVBoxLayout(w)
-        main_layout.setContentsMargins(50, 40, 50, 40)
-        main_layout.setSpacing(30)
-
-        # 1. Header (Giữ nguyên)
-        header_box = QVBoxLayout()
-        lbl_welcome = QLabel("TRUNG TÂM ĐIỀU KHIỂN")
-        lbl_welcome.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        # Bỏ background-color của label để hiện watermark bên dưới
-        lbl_welcome.setStyleSheet("font-size: 26px; font-weight: bold; color: #ffffff; background: transparent;")
-        
-        self.stat_lbl = QLabel("Hệ thống sẵn sàng...") 
-        self.stat_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.stat_lbl.setStyleSheet("font-size: 14px; color: #a4b0be; background: transparent;")
-        
-        header_box.addWidget(lbl_welcome)
-        header_box.addWidget(self.stat_lbl)
-        main_layout.addLayout(header_box)
-
-        # 2. Grid Chức năng (Giữ nguyên logic cũ)
-        grid = QGridLayout()
-        grid.setSpacing(25)
-        
-        # Các Card chức năng (Vẫn dùng create_big_card cũ)
-        card_import = self.create_big_card("NHẬP DỮ LIỆU", "Import câu hỏi LaTeX & Phân loại.", "📥", self.import_files)
-        card_planner = self.create_big_card("SOẠN BÀI GIẢNG", "Soạn chuyên đề & Lọc ma trận.", "📝", self.open_lesson_planner)
-        card_mix = self.create_big_card("TRỘN ĐỀ THI", "Đảo đề hoán vị & Xuất PDF/TeX.", "🔀", self.mix_and_export)
-        # Đổi callback từ self.open_classroom_dialog sang self.show_classroom_menu
-        card_class = self.create_big_card(
-            "GOOGLE CLASSROOM", 
-            "Đăng bài tập & Tổ chức Thi Online (Global).", 
-            "☁️", 
-            self.show_classroom_menu
-        )
-
-        grid.addWidget(card_import, 0, 0)
-        grid.addWidget(card_planner, 0, 1)
-        grid.addWidget(card_mix, 1, 0)
-        grid.addWidget(card_class, 1, 1)
-        
-        grid.setRowStretch(0, 1); grid.setRowStretch(1, 1)
-        grid.setColumnStretch(0, 1); grid.setColumnStretch(1, 1)
-
-        main_layout.addLayout(grid)
-        
-        # Footer (Background transparent để thấy watermark)
-        footer = QLabel(f"BankAI Pro v{APP_VERSION} © 2025 Matrix Edition")
-        footer.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        footer.setStyleSheet("color: rgba(255,255,255,0.3); margin-top: 20px; background: transparent;")
-        main_layout.addWidget(footer)
-
-        return w
+        # Thay thế toàn bộ code cũ bằng 1 dòng này để dùng giao diện Stitch
+        return self.create_web_tab("dashboard.html")
 
     def quick_save_manual_exam(self):
         """Lưu nhanh danh sách câu hỏi hiện tại ra file TeX (Không trộn, không cấu hình)"""
@@ -6883,45 +6969,8 @@ class MainApp(QMainWindow):
 
 # Thay thế hàm create_matrix_tab trong class MainApp
     def create_matrix_tab(self):
-        """Tab tạo đề Ma trận - Giao diện Launchpad"""
-        w = QWidget()
-        l = QVBoxLayout(w)
-        l.setContentsMargins(50, 50, 50, 50)
-        l.setSpacing(20)
-        
-        # Header
-        lbl_title = QLabel("CÔNG CỤ TẠO ĐỀ MA TRẬN 2025")
-        lbl_title.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        lbl_title.setStyleSheet("font-size: 24px; font-weight: bold; color: #d35400;")
-        l.addWidget(lbl_title)
-        
-        lbl_desc = QLabel("Hệ thống ma trận 3 chiều (Lớp - Chương - Bài) hỗ trợ trích xuất đề thi chính xác.\n"
-                          "Bấm nút bên dưới để mở Bảng điều khiển Ma trận.")
-        lbl_desc.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        lbl_desc.setStyleSheet("font-size: 14px; color: #555; margin-bottom: 20px;")
-        l.addWidget(lbl_desc)
-        
-        # Big Button
-        btn_open = QPushButton("🎛️ MỞ BẢNG ĐIỀU KHIỂN MA TRẬN")
-        btn_open.setMinimumHeight(80)
-        btn_open.setCursor(Qt.CursorShape.PointingHandCursor)
-        btn_open.setStyleSheet("""
-            QPushButton {
-                background-color: #e67e22; color: white; 
-                font-size: 18px; font-weight: bold; border-radius: 10px;
-            }
-            QPushButton:hover { background-color: #d35400; }
-        """)
-        btn_open.clicked.connect(self.open_matrix_window)
-        l.addWidget(btn_open)
-        
-        # Info area
-        self.lbl_matrix_status = QLabel("Trạng thái: Chưa có đề nào được tạo.")
-        self.lbl_matrix_status.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        l.addWidget(self.lbl_matrix_status)
-        
-        l.addStretch()
-        return w
+        # Thay thế toàn bộ code cũ
+        return self.create_web_tab("matrix_editor.html")
 
     def open_matrix_window(self):
         """Mở cửa sổ Ma trận riêng biệt"""
@@ -8038,6 +8087,34 @@ class MainApp(QMainWindow):
         # Nếu muốn hiện thông báo nổi (System Tray) nếu có
         if hasattr(self, 'tray_icon'):
             self.tray_icon.showMessage("Kết quả thi", msg)
+
+    # [Thay thế hàm cũ trong class MainApp]
+    def create_web_tab(self, html_file):
+        """Tạo tab hiển thị giao diện HTML (Đã cấp quyền Internet)"""
+        view = QWebEngineView()
+        
+        # 1. Thiết lập cầu nối dữ liệu (Bridge)
+        view.page().setWebChannel(self.channel)
+        
+        # --- [THÊM ĐOẠN NÀY ĐỂ SỬA LỖI KHÔNG TẢI ĐƯỢC TAILWIND] ---
+        # Cấp quyền cho file nội bộ (HTML) truy cập Internet (CDN)
+        settings = view.settings()
+        settings.setAttribute(QWebEngineSettings.WebAttribute.LocalContentCanAccessRemoteUrls, True)
+        settings.setAttribute(QWebEngineSettings.WebAttribute.LocalContentCanAccessFileUrls, True)
+        settings.setAttribute(QWebEngineSettings.WebAttribute.JavascriptEnabled, True)
+        # ---------------------------------------------------------
+
+        # 2. Cấu hình đường dẫn file
+        base_dir = os.path.dirname(os.path.abspath(__file__))
+        html_path = os.path.join(base_dir, "ui", html_file)
+        
+        # Fallback nếu không thấy trong thư mục ui
+        if not os.path.exists(html_path):
+             html_path = os.path.join(base_dir, html_file)
+            
+        view.setUrl(QUrl.fromLocalFile(html_path))
+        
+        return view
 # =============================================================================
 # AI CLONER - ĐÃ TÁCH RA KHỎI MAINAPP
 # =============================================================================
