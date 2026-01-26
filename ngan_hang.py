@@ -1,8 +1,37 @@
-# Thêm đoạn này vào ngay sau các dòng import os, sys
 import os
 import sys
+import re
+import sqlite3
+import time
+import json
+import logging
+import random
+import shutil
+import subprocess
+import platform
+import warnings
+import socket
+import uuid
+import hashlib
 
+# Third-party imports
+import requests
 import PyQt6
+# Web server imports
+try:
+    from pyngrok import ngrok, conf
+    import uvicorn
+    from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException
+    from fastapi.responses import HTMLResponse, FileResponse
+    from fastapi.middleware.cors import CORSMiddleware
+except ImportError:
+    pass
+
+from google.auth.transport.requests import Request
+from google.oauth2.credentials import Credentials
+from google_auth_oauthlib.flow import InstalledAppFlow
+from googleapiclient.discovery import build
+from googleapiclient.http import MediaFileUpload
 
 # 1. Xác định thư mục gốc của PyQt6
 qt_root = os.path.dirname(PyQt6.__file__)
@@ -34,11 +63,6 @@ else:
 # [QUAN TRỌNG] Cấu hình PATH cho macOS để tìm thấy pdflatex
 if sys.platform == 'darwin':
     os.environ['PATH'] += ':/usr/local/bin:/opt/homebrew/bin:/Library/TeX/texbin'
-# ---------------------------------------------
-
-# [QUAN TRỌNG] Cấu hình PATH cho macOS để tìm thấy pdflatex và poppler khi chạy dạng .app
-if sys.platform == 'darwin':
-    os.environ['PATH'] += ':/usr/local/bin:/opt/homebrew/bin:/Library/TeX/texbin'
 
 # Hàm lấy đường dẫn tài nguyên (Hỗ trợ PyInstaller)
 def resource_path(relative_path):
@@ -49,43 +73,10 @@ def resource_path(relative_path):
     except Exception:
         base_path = os.path.abspath(".")
     return os.path.join(base_path, relative_path)
-# Thêm vào đầu file
-import shutil
 
-# Thêm hàm dọn dẹp vào class MainApp (gọi khi closeEvent)
-def cleanup_cache(self):
-    # Chỉ xóa các file tạm, giữ lại SVG
-    if os.path.exists(CACHE_DIR):
-        for f in os.listdir(CACHE_DIR):
-            if not f.endswith(".svg"):
-                try:
-                    os.remove(os.path.join(CACHE_DIR, f))
-                except: pass
-import os
-import sys
-import re
-import sqlite3
-import time
-import json
-import logging
-import random
-import shutil
-import subprocess
-import platform
-import warnings
-import os.path
-from google.auth.transport.requests import Request
-from google.oauth2.credentials import Credentials
-from google_auth_oauthlib.flow import InstalledAppFlow
-from googleapiclient.discovery import build
-from googleapiclient.http import MediaFileUpload
 # =============================================================================
 # MODULE BẢN QUYỀN (LICENSE SYSTEM)
 # =============================================================================
-import uuid
-import platform
-import hashlib
-import requests
 from PyQt6.QtWidgets import (QDialog, QVBoxLayout, QHBoxLayout, QLabel, QLineEdit, 
                              QPushButton, QMessageBox, QRadioButton, QButtonGroup, 
                              QGroupBox, QApplication, QWidget, QCheckBox, QProgressBar, QAbstractItemView, QTimeEdit, QSizePolicy, QDialogButtonBox)
@@ -3268,7 +3259,7 @@ class AutoFormWorker(QThread):
         return requests
 
 class ExamMixer:
-    """
+    r"""
     Class xử lý trộn đề: 
     - Hỗ trợ nhận diện \True để tìm đáp án đúng.
     - Hỗ trợ cấu trúc \choice[...] có tham số tùy chọn.
@@ -4260,7 +4251,7 @@ class LatexParser:
 
     @staticmethod
     def split_question_parts(raw_tex):
-        """
+        r"""
         Phân tách câu hỏi thành: Nội dung hỏi (Stem), List đáp án (Options), Lời giải (Solution)
         Hỗ trợ cấu trúc: \choice{A}{B}{C}{D}, \choiceTF, \loigiai
         """
@@ -4404,6 +4395,7 @@ WEB_UI_TEMPLATE = """
 
             var proto = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
             var url = proto + '//' + window.location.host + '/ws';
+            console.log("Attempting to connect to WebSocket at:", url);
             
             try {
                 ws = new WebSocket(url);
@@ -4556,15 +4548,6 @@ class ConnectionManager:
 
 manager = ConnectionManager()
 
-# --- ĐẢM BẢO ĐÃ IMPORT CÁC THƯ VIỆN NÀY Ở ĐẦU FILE ---
-from pyngrok import ngrok, conf
-import uvicorn
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect
-from fastapi.responses import HTMLResponse, FileResponse
-from fastapi.middleware.cors import CORSMiddleware
-import json
-import os
-import socket
 
 # --- CẬP NHẬT: WEB SERVER THREAD (FIX LỖI GMAIL CÁ NHÂN) ---
 class WebServerThread(QThread):
@@ -4583,8 +4566,14 @@ class WebServerThread(QThread):
         
         self.public_url = ""
         
-        # [ĐÃ SỬA] Thêm lại dòng này để tránh lỗi Attribute Error
-        self.ip_address = "0.0.0.0" 
+        # Tự động lấy IP mạng LAN
+        try:
+            s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            s.connect(("8.8.8.8", 80))
+            self.ip_address = s.getsockname()[0]
+            s.close()
+        except:
+            self.ip_address = "127.0.0.1"
         
         self.gg_sync = None 
         
@@ -4703,23 +4692,21 @@ class WebServerThread(QThread):
             except: pass
 
         # Kết nối Ngrok
-        MY_DOMAIN = "oncologic-premeditative-nada.ngrok-free.dev"
         try:
             ngrok.kill()
-            success = False
-            for i in range(3):
-                try:
-                    import time; time.sleep(5)
-                    self.public_url = ngrok.connect(self.port, domain=MY_DOMAIN).public_url
-                    self.server_ready.emit(self.public_url)
-                    success = True; break
-                except: pass
-            if not success:
-                self.public_url = ngrok.connect(self.port).public_url
-                self.server_ready.emit(self.public_url)
-        except Exception as e: self.server_ready.emit(f"Lỗi Ngrok: {e}")
+            # Kết nối ngrok đơn giản, không dùng domain tĩnh để tránh lỗi quyền
+            tunnel = ngrok.connect(self.port)
+            self.public_url = tunnel.public_url
+            print(f"✅ Ngrok Connected: {self.public_url}")
+            self.server_ready.emit(self.public_url)
+        except Exception as e:
+            print(f"❌ Ngrok Error: {e}")
+            self.server_ready.emit(f"Lỗi Ngrok: {str(e)}")
 
-        uvicorn.run(app, host="0.0.0.0", port=self.port, log_level="critical", proxy_headers=True)
+        # Chạy Uvicorn Server
+        # host="0.0.0.0" để cho phép truy cập từ LAN và Ngrok
+        # [FIX] Thêm forwarded_allow_ips='*' để sửa lỗi WebSocket 'Bad Response' qua Ngrok
+        uvicorn.run(app, host="0.0.0.0", port=self.port, log_level="info", proxy_headers=True, forwarded_allow_ips='*')
 # =============================================================================
 #  MODULE GOOGLE CLASSROOM & PDF (THÊM MỚI VÀO ĐÂY)
 # =============================================================================
