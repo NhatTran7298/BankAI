@@ -18,14 +18,6 @@ import hashlib
 import requests
 import PyQt6
 # Web server imports
-try:
-    from pyngrok import ngrok, conf
-    import uvicorn
-    from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException
-    from fastapi.responses import HTMLResponse, FileResponse
-    from fastapi.middleware.cors import CORSMiddleware
-except ImportError:
-    pass
 
 from google.auth.transport.requests import Request
 from google.oauth2.credentials import Credentials
@@ -1500,8 +1492,77 @@ class GoogleManagerFull:
 
     def batch_update_form(self, form_id, requests):
         """Gửi lệnh cập nhật form (thêm câu hỏi hàng loạt)"""
-        body = {'requests': requests}
-        self.service_forms.forms().batchUpdate(formId=form_id, body=body).execute()
+        # Chia nhỏ request nếu quá lớn (Google giới hạn khoảng 100 request/batch)
+        chunk_size = 50
+        for i in range(0, len(requests), chunk_size):
+            chunk = requests[i:i + chunk_size]
+            body = {'requests': chunk}
+            self.service_forms.forms().batchUpdate(formId=form_id, body=body).execute()
+
+    def generate_form_requests(self, questions_data):
+        """
+        Tạo danh sách request cho Google Forms API từ dữ liệu câu hỏi
+        questions_data: List of dicts: {'image_id': '...', 'key': 'A', 'idx': 1}
+        """
+        requests = []
+        index = 0
+
+        for q in questions_data:
+            # 1. Image Item (Nội dung câu hỏi dạng ảnh)
+            # URL đặc biệt để Google Forms load được ảnh từ Drive (Public)
+            img_url = f"https://drive.google.com/uc?export=view&id={q['image_id']}"
+
+            requests.append({
+                "createItem": {
+                    "item": {
+                        "title": f"Câu {q['idx']}",
+                        "imageItem": {
+                            "image": {
+                                "sourceUri": img_url
+                            }
+                        }
+                    },
+                    "location": { "index": index }
+                }
+            })
+            index += 1
+
+            # 2. Question Item (Các phương án trả lời)
+            correct_val = str(q.get('key', 'A')).upper()
+            if correct_val not in ['A', 'B', 'C', 'D']: correct_val = 'A' # Fallback
+
+            options = [{"value": c} for c in ['A', 'B', 'C', 'D']]
+
+            # Logic chấm điểm (Grading)
+            grading = {
+                "pointValue": 1, # Mặc định 1 điểm/câu (Google Forms tự chia)
+                "correctAnswers": {
+                    "answers": [{"value": correct_val}]
+                }
+            }
+
+            requests.append({
+                "createItem": {
+                    "item": {
+                        "title": "Chọn đáp án đúng:",
+                        "questionItem": {
+                            "question": {
+                                "required": True,
+                                "grading": grading,
+                                "choiceQuestion": {
+                                    "type": "RADIO",
+                                    "options": options,
+                                    "shuffle": False
+                                }
+                            }
+                        }
+                    },
+                    "location": { "index": index }
+                }
+            })
+            index += 1
+
+        return requests
 # =============================================================================
 # 4. DATABASE BACKEND
 # =============================================================================
@@ -3023,6 +3084,88 @@ class ClassroomDialog(QDialog):
         self.worker.start()
         self.btn_upload.setEnabled(False)
 
+class FormGenWorker(QThread):
+    """Worker chuyên biệt để tạo đề thi Google Forms từ ảnh LaTeX"""
+    progress = pyqtSignal(int, str)
+    finished = pyqtSignal(str) # Return URL
+    error = pyqtSignal(str)
+
+    def __init__(self, google_mgr, questions, title, description, course_id):
+        super().__init__()
+        self.gg = google_mgr
+        self.qs = questions
+        self.title = title
+        self.desc = description
+        self.cid = course_id
+
+    def run(self):
+        import time
+        try:
+            self.progress.emit(5, "Đang khởi tạo Google Form...")
+            # 1. Tạo Form Quiz Trống
+            form_id, form_url = self.gg.create_quiz_form(self.title, self.desc)
+
+            # 2. Render và Upload từng câu
+            processed_qs = []
+            total = len(self.qs)
+
+            for i, q in enumerate(self.qs):
+                if self.isInterruptionRequested(): return
+
+                # Update progress
+                p = 10 + int((i / total) * 70)
+                self.progress.emit(p, f"Đang xử lý câu {i+1}/{total} (Render & Upload)...")
+
+                # Render Image
+                content = q.get('content_tex', q.get('content', ''))
+                # Đặt tên file tạm
+                temp_name = f"q_{int(time.time())}_{i}"
+                img_path = ImageCompiler.compile_question_to_png(content, temp_name)
+
+                if not img_path:
+                    print(f"⚠️ Lỗi render câu {i+1}, bỏ qua.")
+                    continue
+
+                # Upload lên Drive
+                img_id = self.gg.upload_image(img_path)
+
+                processed_qs.append({
+                    'idx': i + 1,
+                    'image_id': img_id,
+                    'key': q.get('key', '?')
+                })
+
+                # Xóa file tạm
+                try: os.remove(img_path)
+                except: pass
+
+            # 3. Cập nhật Form
+            self.progress.emit(85, "Đang cấu hình câu hỏi vào Form...")
+            if processed_qs:
+                reqs = self.gg.generate_form_requests(processed_qs)
+                self.gg.batch_update_form(form_id, reqs)
+
+            self.progress.emit(95, "Đang đăng bài lên Classroom...")
+
+            # 4. Đăng lên Classroom
+            link_share = {'link': {'url': form_url, 'title': f"BÀI THI: {self.title}"}}
+            body = {
+                'title': self.title,
+                'description': f"{self.desc}\n\n📝 Link bài thi trắc nghiệm: {form_url}",
+                'workType': 'ASSIGNMENT',
+                'state': 'PUBLISHED',
+                'maxPoints': 10,
+                'materials': [link_share]
+            }
+            self.gg.service_class.courses().courseWork().create(courseId=self.cid, body=body).execute()
+
+            self.finished.emit(form_url)
+
+        except Exception as e:
+            import traceback
+            traceback.print_exc()
+            self.error.emit(str(e))
+
 class AutoFormWorker(QThread):
     progress = pyqtSignal(int, str)
     finished = pyqtSignal(str)
@@ -4292,216 +4435,6 @@ class LatexParser:
             "solution": solution # Nội dung lời giải
         }
 # --- 5. WEB UI (FIX LỖI JAVASCRIPT SPREAD SYNTAX) ---
-WEB_UI_TEMPLATE = """
-<!DOCTYPE html>
-<html lang="vi">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-    <title>HỆ THỐNG THI ONLINE</title>
-    <script src="https://cdn.tailwindcss.com"></script>
-    <style>
-        body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background: #f3f4f6; height: 100vh; overflow: hidden; }
-        #login-screen { position: fixed; inset: 0; background: #fff; z-index: 50; display: flex; flex-direction: column; align-items: center; justify-content: center; }
-        .login-box { width: 90%; max-width: 400px; text-align: center; }
-        #exam-ui { display: flex; height: 100%; flex-direction: column; }
-        @media (min-width: 768px) { #exam-ui { flex-direction: row; } }
-        .left-panel { flex: 1; background: #374151; position: relative; display: none; }
-        @media (min-width: 768px) { .left-panel { display: block; flex: 6; } }
-        iframe { width: 100%; height: 100%; border: none; }
-        .right-panel { flex: 4; display: flex; flex-direction: column; background: white; height: 100%; border-left: 1px solid #ddd; }
-        .sheet-container { flex: 1; overflow-y: auto; padding: 15px; -webkit-overflow-scrolling: touch; }
-        .part-title { background: #e0f2fe; color: #0369a1; padding: 8px; font-weight: bold; font-size: 14px; margin: 15px 0 10px 0; border-radius: 6px; text-transform: uppercase; }
-        .q-item { background: #fff; border: 1px solid #e5e7eb; padding: 10px; margin-bottom: 10px; border-radius: 8px; box-shadow: 0 1px 2px rgba(0,0,0,0.05); }
-        .q-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px; }
-        .q-id { font-weight: bold; color: #374151; width: 30px; }
-        .bubbles { display: flex; gap: 8px; justify-content: center; }
-        .bubble { width: 35px; height: 35px; border-radius: 50%; border: 2px solid #d1d5db; display: flex; align-items: center; justify-content: center; font-weight: bold; color: #6b7280; cursor: pointer; }
-        .bubble.selected { background: #2563eb; color: white; border-color: #2563eb; transform: scale(1.1); transition: 0.2s; }
-        .tf-row { display: flex; align-items: center; justify-content: space-between; background: #f9fafb; padding: 6px 10px; margin-bottom: 4px; border-radius: 4px; }
-        .tf-opts { display: flex; gap: 5px; }
-        .tf-btn { width: 30px; height: 30px; border: 1px solid #cbd5e1; border-radius: 4px; display: flex; align-items: center; justify-content: center; font-weight: bold; font-size: 12px; cursor: pointer; }
-        .tf-btn.sel-D { background: #22c55e; color: white; border-color: #22c55e; }
-        .tf-btn.sel-S { background: #ef4444; color: white; border-color: #ef4444; }
-        .short-inp { width: 100%; border: 2px solid #e5e7eb; padding: 8px; border-radius: 6px; font-weight: bold; color: #1e3a8a; text-align: center; }
-        .short-inp:focus { border-color: #2563eb; outline: none; }
-        .mark { font-weight: bold; font-size: 14px; }
-        #score-modal { position: fixed; inset: 0; background: rgba(0,0,0,0.8); z-index: 3000; display: none; align-items: center; justify-content: center; backdrop-filter: blur(5px); }
-        .score-box { background: white; padding: 40px; border-radius: 20px; text-align: center; width: 90%; max-width: 500px; animation: popIn 0.5s cubic-bezier(0.175, 0.885, 0.32, 1.275); }
-        @keyframes popIn { from { transform: scale(0.5); opacity: 0; } to { transform: scale(1); opacity: 1; } }
-    </style>
-</head>
-<body>
-    <div id="login-screen">
-        <div class="login-box" id="login-form">
-            <div class="text-5xl mb-4">📝</div>
-            <h2 class="text-2xl font-bold text-gray-800 mb-2">VÀO PHÒNG THI</h2>
-            <div id="exam-title-display" class="text-blue-600 font-bold mb-6 text-sm uppercase">Đang tải thông tin đề...</div>
-            
-            <input type="text" id="student-name" class="w-full p-3 border-2 border-gray-200 rounded-lg mb-3 text-center font-bold outline-none focus:border-blue-500" placeholder="Họ và Tên (VD: Nguyễn Văn A)" autocomplete="off">
-            <input type="email" id="student-email" class="w-full p-3 border-2 border-gray-200 rounded-lg mb-6 text-center font-bold outline-none focus:border-blue-500" placeholder="Email Google Classroom (Nếu có)" autocomplete="email">
-            <button onclick="window.joinRoom()" class="w-full bg-blue-600 text-white p-3 rounded-lg font-bold text-lg shadow-lg active:scale-95 transition">VÀO THI NGAY</button>
-        </div>
-        <div class="login-box hidden" id="waiting-msg">
-            <div class="text-6xl mb-4 animate-bounce">⏳</div>
-            <h2 class="text-xl font-bold text-gray-800">ĐANG TẢI ĐỀ THI...</h2>
-            <div class="mt-4 px-4 py-2 bg-blue-50 text-blue-700 rounded-lg font-bold"><span id="display-name"></span></div>
-        </div>
-    </div>
-
-    <div id="exam-ui" class="hidden">
-        <div class="left-panel"><iframe id="pdf-frame"></iframe></div>
-        <div class="right-panel">
-             <div class="bg-gray-800 text-white p-3 flex justify-between items-center shadow-md z-10">
-                <div><div class="text-xs opacity-70">THỜI GIAN</div><div class="text-2xl font-mono font-bold text-yellow-400" id="timer">--:--</div></div>
-                <button onclick="window.submitExam()" id="btn-submit" class="bg-red-600 hover:bg-red-700 text-white font-bold py-2 px-6 rounded shadow">NỘP BÀI</button>
-             </div>
-             <div class="sheet-container" id="sheet"></div>
-        </div>
-    </div>
-
-    <div id="score-modal">
-        <div class="score-box">
-            <div class="text-6xl mb-4">🏆</div>
-            <h2 class="text-3xl font-bold text-gray-800 mb-2">KẾT QUẢ</h2>
-            <div class="text-5xl font-bold text-blue-600 my-6"><span id="final-score">0</span> điểm</div>
-            <div class="text-sm text-green-600 font-bold mb-6">Đã lưu kết quả vào hệ thống!</div>
-        </div>
-    </div>
-
-    <script>
-        // Lấy ID đề thi từ URL (VD: /exam/DE_THI_123 -> examId = DE_THI_123)
-        var pathParts = window.location.pathname.split('/');
-        var examId = pathParts[pathParts.length - 1]; // Lấy phần cuối cùng
-
-        var ws = null;
-        var clientId = localStorage.getItem('sid') || 'u-' + Math.random().toString(36).substr(2, 6);
-        localStorage.setItem('sid', clientId);
-        var examData = null; var userAnswers = {}; var timeLeft = 0; var timerInt = null; var isSubmitted = false;
-        var myName = "", myEmail = "";
-
-        // Tự động kết nối để lấy tên đề thi
-        window.onload = function() {
-             document.getElementById('exam-title-display').innerText = "Mã đề: " + examId;
-        }
-
-        window.joinRoom = function() {
-            myName = document.getElementById('student-name').value.trim();
-            myEmail = document.getElementById('student-email').value.trim();
-            if (!myName) return alert("Vui lòng nhập Họ Tên!");
-
-            var btn = document.querySelector('#login-form button');
-            var oldText = btn.innerText; btn.innerText = "ĐANG KẾT NỐI..."; btn.disabled = true;
-
-            var proto = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-            var url = proto + '//' + window.location.host + '/ws';
-            console.log("Attempting to connect to WebSocket at:", url);
-            
-            try {
-                ws = new WebSocket(url);
-                ws.onopen = function() {
-                    // [QUAN TRỌNG] Gửi kèm examId để Server biết cần lấy đề nào
-                    ws.send(JSON.stringify({ type: "JOIN", id: clientId, name: myName, email: myEmail, exam_id: examId }));
-                    document.getElementById('login-form').classList.add('hidden');
-                    document.getElementById('waiting-msg').classList.remove('hidden');
-                    document.getElementById('display-name').innerText = myName;
-                };
-                ws.onmessage = function(e) {
-                    try {
-                        var msg = JSON.parse(e.data);
-                        if (msg.type === 'START_EXAM') startExam(msg.data);
-                        if (msg.type === 'ERROR') { alert(msg.message); location.reload(); }
-                    } catch(err) {}
-                };
-                ws.onerror = function() { alert("Lỗi kết nối!"); btn.innerText = oldText; btn.disabled = false; };
-            } catch (e) { alert("Lỗi Socket: " + e); btn.innerText = oldText; btn.disabled = false; }
-        };
-
-        function startExam(data) {
-            examData = data;
-            document.getElementById('login-screen').style.display = 'none';
-            document.getElementById('exam-ui').classList.remove('hidden');
-            if(data.pdf_filename) document.getElementById('pdf-frame').src = '/api/pdf/' + data.pdf_filename;
-            if(data.duration) { timeLeft = parseInt(data.duration); startTimer(); }
-            renderSheet(data.exam_matrix || []);
-        }
-
-        function renderSheet(matrix) {
-            var c = document.getElementById('sheet'); c.innerHTML = "";
-            var p1 = matrix.filter(q => q.type == 1);
-            var p2 = matrix.filter(q => q.type == 2);
-            var p3 = matrix.filter(q => q.type == 3);
-
-            if(p1.length > 0) {
-                c.innerHTML += '<div class="part-title">PHẦN I: TRẮC NGHIỆM ('+(3.0/p1.length).toFixed(2)+'đ/câu)</div>';
-                p1.forEach(q => {
-                    var html = '<div class="q-item" id="q-'+q.id+'"><div class="q-header"><div class="q-id">'+q.id+'</div><div class="mark" id="m-'+q.id+'"></div></div><div class="bubbles">';
-                    ['A','B','C','D'].forEach(opt => {
-                        html += '<div class="bubble" id="btn-'+q.id+'-'+opt+'" data-type="1" data-id="'+q.id+'" data-val="'+opt+'" onclick="handleClick(this)">'+opt+'</div>';
-                    });
-                    c.innerHTML += html + '</div></div>';
-                });
-            }
-            if(p2.length > 0) {
-                c.innerHTML += '<div class="part-title">PHẦN II: ĐÚNG/SAI ('+(4.0/p2.length).toFixed(2)+'đ/câu)</div>';
-                p2.forEach(q => {
-                    var html = '<div class="q-item" id="q-'+q.id+'"><div class="q-header"><div class="q-id">'+q.id+'</div><div class="mark" id="m-'+q.id+'"></div></div><div class="tf-grid">';
-                    ['a','b','c','d'].forEach(sub => {
-                        html += '<div class="tf-row"><span>'+sub+')</span><div class="tf-opts"><div class="tf-btn" data-type="2" data-id="'+q.id+'" data-sub="'+sub+'" data-val="Đ" onclick="handleClick(this)">Đ</div><div class="tf-btn" data-type="2" data-id="'+q.id+'" data-sub="'+sub+'" data-val="S" onclick="handleClick(this)">S</div><span class="text-xs font-bold text-gray-400 ml-2" id="key-'+q.id+'-'+sub+'"></span></div></div>';
-                    });
-                    c.innerHTML += html + '</div></div>';
-                });
-            }
-            if(p3.length > 0) {
-                c.innerHTML += '<div class="part-title">PHẦN III: TRẢ LỜI NGẮN ('+(3.0/p3.length).toFixed(2)+'đ/câu)</div>';
-                p3.forEach(q => {
-                    c.innerHTML += '<div class="q-item" id="q-'+q.id+'"><div class="q-header"><div class="q-id">'+q.id+'</div><div class="mark" id="m-'+q.id+'"></div></div><input type="text" class="short-inp" placeholder="Nhập đáp án..." onchange="window.sel(3,'+q.id+',this.value)"></div>';
-                });
-            }
-        }
-        window.handleClick = function(el) { window.sel(parseInt(el.dataset.type), el.dataset.id, el.dataset.val, el.dataset.sub, el); };
-        window.sel = function(t, i, v, s, e) {
-            if(isSubmitted) return;
-            if(t===1) { userAnswers[i] = v; var p = e.parentElement; for(var k=0; k<p.children.length; k++) p.children[k].classList.remove('selected'); e.classList.add('selected'); }
-            else if(t===2) { if(!userAnswers[i]) userAnswers[i] = {}; userAnswers[i][s] = v; var p = e.parentElement; for(var k=0; k<p.children.length; k++) if(p.children[k].classList.contains('tf-btn')) p.children[k].className='tf-btn'; e.classList.add(v==='Đ'?'sel-D':'sel-S'); }
-            else if(t===3) userAnswers[i] = v;
-        };
-        function startTimer() { timerInt = setInterval(function() { if(timeLeft <= 0) { clearInterval(timerInt); window.submitExam(); return; } timeLeft--; var m = Math.floor(timeLeft/60), s = timeLeft%60; document.getElementById('timer').innerText = m + ":" + (s<10?"0":"")+s; }, 1000); }
-
-        window.submitExam = function() {
-            if(!confirm("Nộp bài ngay?")) return;
-            isSubmitted = true; document.getElementById('btn-submit').style.display = 'none'; clearInterval(timerInt);
-            var examMatrix = examData.exam_matrix || [];
-            
-            const p1 = examMatrix.filter(q => q.type === 1); const valP1 = p1.length>0 ? (3.0/p1.length) : 0;
-            const p2 = examMatrix.filter(q => q.type === 2); const valP2 = p2.length>0 ? (4.0/p2.length) : 0;
-            const p3 = examMatrix.filter(q => q.type === 3); const valP3 = p3.length>0 ? (3.0/p3.length) : 0;
-            let s1=0, s2=0, s3=0;
-
-            examMatrix.forEach(q => {
-                const mk = document.getElementById('m-'+q.id); const ua = userAnswers[q.id];
-                if(q.type === 1) { if(ua === q.key) { s1+=valP1; mk.innerHTML='✅'; } else mk.innerHTML='<span class="text-red-500 font-bold">'+q.key+'</span>'; }
-                else if(q.type === 2) {
-                    let cc=0; ['a','b','c','d'].forEach(x=>{ if(ua && ua[x]===q.key[x]) cc++; document.getElementById('key-'+q.id+'-'+x).innerText=q.key[x]; });
-                    let r=0; if(cc==1) r=0.1; if(cc==2) r=0.25; if(cc==3) r=0.5; if(cc==4) r=1.0;
-                    s2 += valP2*r; mk.innerHTML='<span class="text-blue-600">+'+(valP2*r).toFixed(2)+'</span>';
-                }
-                else if(q.type === 3) { if(String(ua||"").replace(/\\s/g,"").toLowerCase().replace(",",".") === String(q.key||"").replace(/\\s/g,"").toLowerCase().replace(",",".")) { s3+=valP3; mk.innerHTML='✅'; } else mk.innerHTML='<span class="text-red-500 font-bold">'+q.key+'</span>'; }
-            });
-
-            var total = (s1+s2+s3).toFixed(2);
-            document.getElementById('final-score').innerText = total;
-            document.getElementById('score-modal').style.display = 'flex';
-
-            // Gửi cả ExamID để Server biết nộp cho đề nào
-            if (ws && ws.readyState === WebSocket.OPEN) {
-                ws.send(JSON.stringify({ type: "SUBMIT", exam_id: examId, name: myName, email: myEmail, score: total, detail: userAnswers }));
-            }
-        };
-    </script>
-</body>
-</html>
-"""
 
 # =============================================================================
 # CẬP NHẬT WEB SERVER THREAD (TỰ ĐỘNG TÌM PORT TRỐNG)
@@ -4525,192 +4458,6 @@ class ConnectionManager:
             "name": name, 
             "status": "waiting"
         }
-
-    def disconnect(self, client_id: str):
-        if client_id in self.active_connections:
-            del self.active_connections[client_id]
-
-    async def broadcast_exam(self, exam_data, target_ids):
-        for cid in target_ids:
-            if cid in self.active_connections:
-                client = self.active_connections[cid]
-                try:
-                    await client["ws"].send_json({
-                        "type": "START_EXAM",
-                        "data": exam_data
-                    })
-                    client["status"] = "doing"
-                except:
-                    self.disconnect(cid)
-
-    def get_list(self):
-        return [{"id": k, "name": v["name"], "status": v["status"]} for k,v in self.active_connections.items()]
-
-manager = ConnectionManager()
-
-
-# --- CẬP NHẬT: WEB SERVER THREAD (FIX LỖI GMAIL CÁ NHÂN) ---
-class WebServerThread(QThread):
-    students_changed = pyqtSignal(list)
-    server_ready = pyqtSignal(str)
-    result_received = pyqtSignal(str, float)
-
-    def __init__(self, db_path):
-        super().__init__()
-        self.db_path = db_path
-        self.port = 8080
-        
-        # [QUAN TRỌNG] Nhớ điền Token thật của bạn vào đây
-        # Ví dụ: self.ngrok_auth_token = "2Alk..."
-        self.ngrok_auth_token = "38b8oxhy3hT98ZoeqO7kl8RJaJP_axFQ8v4mjEtV5EvSwLzb"
-        
-        self.public_url = ""
-        
-        # Tự động lấy IP mạng LAN
-        try:
-            s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-            s.connect(("8.8.8.8", 80))
-            self.ip_address = s.getsockname()[0]
-            s.close()
-        except:
-            self.ip_address = "127.0.0.1"
-        
-        self.gg_sync = None 
-        
-        # Thư mục chứa các file đề thi riêng biệt
-        self.exam_dir = os.path.join(os.path.expanduser("~"), ".bankai_exams")
-        if not os.path.exists(self.exam_dir): os.makedirs(self.exam_dir)
-
-    def save_exam_file(self, exam_id, data):
-        """Lưu đề thi thành file riêng biệt"""
-        filepath = os.path.join(self.exam_dir, f"{exam_id}.json")
-        with open(filepath, "w", encoding="utf-8") as f:
-            json.dump(data, f, ensure_ascii=False, indent=4)
-        print(f"💾 Đã lưu đề thi: {exam_id}")
-
-    def load_exam_file(self, exam_id):
-        """Đọc file đề thi theo ID"""
-        filepath = os.path.join(self.exam_dir, f"{exam_id}.json")
-        if os.path.exists(filepath):
-            with open(filepath, "r", encoding="utf-8") as f:
-                return json.load(f)
-        return None
-
-    def sync_score(self, exam_data, name, email, score):
-        """Đồng bộ điểm lên Google Classroom (Cần dữ liệu của đúng đề đó)"""
-        cid = exam_data.get('courseId')
-        cwid = exam_data.get('courseWorkId')
-        if not cid or not cwid: return
-
-        if not self.gg_sync:
-            try: self.gg_sync = GoogleManagerFull(); self.gg_sync.authenticate()
-            except: return
-
-        try:
-            print(f"🔄 Đang đồng bộ điểm cho đề {exam_data.get('title')}...")
-            service = self.gg_sync.service_class
-            # ... (Giữ nguyên logic tìm HS và chấm điểm như cũ) ...
-            students = service.courses().students().list(courseId=cid).execute().get('students', [])
-            user_id = None
-            target_email = email.strip().lower()
-            target_name = name.strip().lower()
-            
-            for s in students:
-                p = s.get('profile', {})
-                api_email = p.get('emailAddress', '').lower()
-                api_name = p.get('name', {}).get('fullName', '').lower()
-                if api_email and api_email == target_email: user_id = s['userId']; break
-                if not api_email and api_name == target_name: user_id = s['userId']; break
-            
-            if user_id:
-                subs = service.courses().courseWork().studentSubmissions().list(
-                    courseId=cid, courseWorkId=cwid, userId=user_id).execute().get('studentSubmissions', [])
-                if subs:
-                    body = {'draftGrade': float(score), 'assignedGrade': float(score)}
-                    service.courses().courseWork().studentSubmissions().patch(
-                        courseId=cid, courseWorkId=cwid, id=subs[0]['id'], 
-                        updateMask='assignedGrade,draftGrade', body=body).execute()
-                    print("✅ Đã vào sổ điểm!")
-        except Exception as e: print(f"❌ Lỗi Sync: {e}")
-
-    def run(self):
-        if self.ngrok_auth_token and "NHAP_TOKEN" not in self.ngrok_auth_token:
-            conf.get_default().auth_token = self.ngrok_auth_token
-        
-        conf.get_default().region = "ap"
-        
-        app = FastAPI()
-        app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_credentials=True, allow_methods=["*"], allow_headers=["*"])
-
-        # URL ĐỘNG: /exam/{exam_id} -> Trả về giao diện thi
-        @app.get("/exam/{exam_id}")
-        async def get_exam_ui(exam_id: str):
-            # Kiểm tra xem đề có tồn tại không
-            if self.load_exam_file(exam_id):
-                return HTMLResponse(content=WEB_UI_TEMPLATE)
-            return HTMLResponse(content="<h1>❌ Đề thi không tồn tại hoặc đã bị xóa!</h1>")
-
-        @app.get("/api/pdf/{filename}")
-        async def get_pdf(filename: str):
-            path = os.path.join(os.path.expanduser("~"), ".bankai_build", filename)
-            return FileResponse(path) if os.path.exists(path) else {"error": "PDF not found"}
-
-        @app.websocket("/ws")
-        async def websocket_endpoint(websocket: WebSocket):
-            await manager.connect(websocket)
-            try:
-                while True:
-                    data = json.loads(await websocket.receive_text())
-                    
-                    if data.get('type') == 'JOIN':
-                        exam_id = data.get('exam_id')
-                        exam_data = self.load_exam_file(exam_id)
-                        
-                        if exam_data:
-                            manager.register(websocket, data['id'], f"{data['name']} [{exam_id}]")
-                            # Gửi đúng đề thi đó cho học sinh
-                            await websocket.send_json({"type": "START_EXAM", "data": exam_data})
-                        else:
-                            await websocket.send_json({"type": "ERROR", "message": "Không tìm thấy dữ liệu đề thi!"})
-
-                    elif data.get('type') == 'SUBMIT':
-                        exam_id = data.get('exam_id')
-                        exam_data = self.load_exam_file(exam_id)
-                        if exam_data:
-                            # Lưu kết quả
-                            try:
-                                conn = sqlite3.connect(self.db_path)
-                                conn.execute("INSERT INTO exam_results (student_name, exam_title, score, detail) VALUES (?, ?, ?, ?)",
-                                    (f"{data['name']} ({data['email']})", exam_data.get('title'), data['score'], json.dumps(data['detail'])))
-                                conn.commit(); conn.close()
-                                self.result_received.emit(f"{data['name']} - {exam_data.get('title')}", float(data['score']))
-                                
-                                # Đồng bộ Classroom
-                                self.sync_score(exam_data, data['name'], data['email'], data['score'])
-                            except: pass
-
-            except: pass
-
-        # Kết nối Ngrok
-        try:
-            ngrok.kill()
-            # Kết nối ngrok đơn giản, không dùng domain tĩnh để tránh lỗi quyền
-            tunnel = ngrok.connect(self.port)
-            self.public_url = tunnel.public_url
-            print(f"✅ Ngrok Connected: {self.public_url}")
-            self.server_ready.emit(self.public_url)
-        except Exception as e:
-            print(f"❌ Ngrok Error: {e}")
-            self.server_ready.emit(f"Lỗi Ngrok: {str(e)}")
-
-        # Chạy Uvicorn Server
-        # host="0.0.0.0" để cho phép truy cập từ LAN và Ngrok
-        # [FIX] Thêm forwarded_allow_ips='*' để sửa lỗi WebSocket 'Bad Response' qua Ngrok
-        uvicorn.run(app, host="0.0.0.0", port=self.port, log_level="info", proxy_headers=True, forwarded_allow_ips='*')
-# =============================================================================
-#  MODULE GOOGLE CLASSROOM & PDF (THÊM MỚI VÀO ĐÂY)
-# =============================================================================
-
 class StatisticsDashboard(QDialog):
     """Bảng Dashboard thống kê (Giao diện Nâu - Cam Luxury)"""
     def __init__(self, backend, parent=None):
@@ -5676,144 +5423,6 @@ class ExamConfigDialog(QDialog):
             "questions": self.final_questions
         }
 
-class ExamMonitorDialog(QDialog):
-    """Màn hình GIÁM SÁT & GIAO BÀI"""
-    def __init__(self, web_thread, parent=None):
-        super().__init__(parent)
-        self.web_thread = web_thread
-        self.setWindowTitle(f"Phòng Thi Ảo - Đang giám sát...")
-        self.resize(1000, 600)
-        
-        layout = QVBoxLayout(self)
-
-        # 1. HEADER: HƯỚNG DẪN KẾT NỐI
-        # Hiển thị to rõ để giáo viên chiếu lên bảng hoặc đọc cho học sinh
-        top_frame = QFrame(); top_frame.setStyleSheet("background-color: #e8f5e9; border-radius: 8px; padding: 10px;")
-        hl = QHBoxLayout(top_frame)
-        
-        lbl_instruct = QLabel("HỌC SINH TRUY CẬP WIFI VÀ VÀO ĐỊA CHỈ:")
-        lbl_instruct.setFont(QFont("Arial", 10, QFont.Weight.Bold))
-        
-        url = f"http://{web_thread.ip_address}:{web_thread.port}"
-        lbl_url = QLabel(url)
-        lbl_url.setFont(QFont("Arial", 24, QFont.Weight.Bold))
-        lbl_url.setStyleSheet("color: #d35400;") # Màu cam nổi bật
-        lbl_url.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
-
-        hl.addWidget(lbl_instruct)
-        hl.addWidget(lbl_url)
-        layout.addWidget(top_frame)
-
-        # 2. BẢNG DANH SÁCH MÁY KẾT NỐI
-        self.lbl_count = QLabel("Hiện có: 0 máy đang kết nối")
-        layout.addWidget(self.lbl_count)
-
-        self.table = QTableWidget()
-        self.table.setColumnCount(5)
-        self.table.setHorizontalHeaderLabels(["Chọn", "Tên Học Sinh", "ĐIỂM SỐ", "Trạng Thái", "ID Máy"])
-        self.table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
-        layout.addWidget(self.table)
-
-        # 3. THANH CÔNG CỤ DƯỚI
-        btn_layout = QHBoxLayout()
-        
-        self.btn_select_all = QPushButton("Chọn tất cả")
-        self.btn_select_all.clicked.connect(self.select_all)
-        
-        self.btn_distribute = QPushButton("🚀 GIAO BÀI NGAY")
-        self.btn_distribute.setMinimumHeight(50)
-        self.btn_distribute.setFont(QFont("Arial", 12, QFont.Weight.Bold))
-        self.btn_distribute.setStyleSheet("background-color: #2ecc71; color: white; border-radius: 5px;")
-        self.btn_distribute.clicked.connect(self.distribute_action)
-
-        btn_layout.addWidget(self.btn_select_all)
-        btn_layout.addWidget(self.btn_distribute)
-        layout.addLayout(btn_layout)
-
-        # KẾT NỐI SIGNAL: Cập nhật bảng ngay khi có HS vào/ra
-        self.web_thread.students_changed.connect(self.update_table)
-
-    def update_table(self, students):
-        """Vẽ lại bảng, giữ nguyên điểm số nếu đã có"""
-        # Lưu lại điểm số hiện tại trên bảng để không bị mất khi redraw
-        current_scores = {}
-        for r in range(self.table.rowCount()):
-            name = self.table.item(r, 1).text()
-            score_item = self.table.item(r, 2)
-            if score_item and score_item.text():
-                current_scores[name] = score_item.text()
-
-        self.table.setRowCount(0)
-        for row, s in enumerate(students):
-            self.table.insertRow(row)
-            # Cột 0: Checkbox
-            chk_w = QWidget(); chk = QCheckBox(); chk.setChecked(True); 
-            l = QHBoxLayout(chk_w); l.addWidget(chk); l.setAlignment(Qt.AlignmentFlag.AlignCenter); l.setContentsMargins(0,0,0,0)
-            self.table.setCellWidget(row, 0, chk_w)
-            
-            # Cột 1: Tên
-            self.table.setItem(row, 1, QTableWidgetItem(s['name']))
-            
-            # Cột 2: Điểm (Load lại nếu có)
-            score_val = current_scores.get(s['name'], "")
-            item_score = QTableWidgetItem(str(score_val))
-            item_score.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
-            item_score.setFont(QFont("Arial", 12, QFont.Weight.Bold))
-            item_score.setForeground(QColor("red"))
-            self.table.setItem(row, 2, item_score)
-
-            # Cột 3: Trạng thái
-            stt = "Đang làm bài" if s['status'] == 'doing' else "Chờ đề"
-            if score_val: stt = "Đã nộp bài" # Nếu có điểm thì là đã nộp
-            self.table.setItem(row, 3, QTableWidgetItem(stt))
-            
-            # Cột 4: ID
-            self.table.setItem(row, 4, QTableWidgetItem(s['id'][:6]))
-
-    def update_score(self, name, score):
-        """Hàm cập nhật điểm trực tiếp khi nhận signal"""
-        found = False
-        for r in range(self.table.rowCount()):
-            if self.table.item(r, 1).text() == name:
-                self.table.setItem(r, 2, QTableWidgetItem(str(score)))
-                self.table.setItem(r, 3, QTableWidgetItem("✅ Đã nộp"))
-                found = True
-                break
-        
-        if not found:
-            # Nếu học sinh nộp bài mà chưa có trong danh sách (hiếm gặp), thêm mới
-            row = self.table.rowCount()
-            self.table.insertRow(row)
-            self.table.setItem(row, 1, QTableWidgetItem(name))
-            self.table.setItem(row, 2, QTableWidgetItem(str(score)))
-            self.table.setItem(row, 3, QTableWidgetItem("✅ Đã nộp"))
-
-    def select_all(self):
-        # Logic chọn tất cả checkbox
-        for row in range(self.table.rowCount()):
-            w = self.table.cellWidget(row, 0)
-            chk = w.findChild(QCheckBox)
-            chk.setChecked(True)
-
-    def distribute_action(self):
-        """Gửi lệnh phát đề cho các máy được chọn"""
-        targets = []
-        for row in range(self.table.rowCount()):
-            w = self.table.cellWidget(row, 0)
-            chk = w.findChild(QCheckBox)
-            if chk.isChecked():
-                # Lấy ID từ data ẩn
-                uid = self.table.item(row, 1).data(Qt.ItemDataRole.UserRole)
-                targets.append(uid)
-        
-        if not targets:
-            QMessageBox.warning(self, "Chưa chọn máy", "Vui lòng chọn ít nhất một học sinh để giao bài!")
-            return
-
-        # GỌI SERVER PHÁT ĐỀ
-        self.web_thread.distribute_exam(targets)
-        QMessageBox.information(self, "Thành công", f"Đã giao bài cho {len(targets)} học sinh!")
-
 class MatrixEditorDialog(QDialog):
     """Cửa sổ soạn ma trận chuyên nghiệp & Review đề (Có Splitter & Hỗ trợ Tổng hợp 3 khối)"""
     def __init__(self, backend, parent=None):
@@ -6474,9 +6083,8 @@ class MainApp(QMainWindow):
         
         # --- PHẢI: CÁC NÚT CHỨC NĂNG ---
         
-        # 1. Nút Bật Web Server (MỚI THÊM)
-        self.btn_web = QPushButton("🌍 Bật Thi Online")
-        self.btn_web.setCheckable(True) # Chế độ bật/tắt
+        # 1. Nút Tạo Đề Online (Thay thế Server cũ)
+        self.btn_web = QPushButton("⚡ Tạo Đề Online (Forms)")
         self.btn_web.setCursor(Qt.CursorShape.PointingHandCursor)
         self.btn_web.setStyleSheet("""
             QPushButton {
@@ -6485,11 +6093,6 @@ class MainApp(QMainWindow):
                 color: #ffffff; padding: 8px 15px; border-radius: 6px; font-weight: 700;
             }
             QPushButton:hover { background-color: rgba(255, 255, 255, 0.3); }
-            QPushButton:checked { 
-                background-color: #2ecc71; /* Màu xanh lá khi đang bật */
-                border-color: #27ae60; 
-                color: white;
-            }
         """)
         self.btn_web.clicked.connect(self.toggle_web_server)
         layout.addWidget(self.btn_web)
@@ -7610,98 +7213,9 @@ class MainApp(QMainWindow):
 
     # Trong class MainApp
     def toggle_web_server(self):
-        """Bật/Tắt Web Server - Fix lỗi tự chạy khi chưa bấm OK"""
-        if self.btn_web.isChecked():
-            # 1. LẤY DỮ LIỆU TỪ TAB ĐANG MỞ
-            questions = []
-            source_name = ""
-            current_idx = self.stack.currentIndex()
+        """Wrapper để gọi hàm tạo đề Forms (Thay thế cho Server Ngrok cũ)"""
+        self.create_online_classroom_exam()
 
-            if current_idx == 1: # Thủ công
-                if hasattr(self.exam_lst, 'get_all_questions'):
-                    questions = self.exam_lst.get_all_questions()
-                source_name = "Soạn Thủ Công"
-            elif current_idx == 2: # Ma trận
-                if hasattr(self, 'current_exam') and self.current_exam:
-                    questions = self.current_exam
-                source_name = "Ma Trận"
-            elif current_idx == 3: # AI
-                if hasattr(self, 'gen_res') and self.gen_res:
-                    first_code = list(self.gen_res.keys())[0]
-                    raw_qs = self.gen_res[first_code]
-                    for q in raw_qs:
-                        questions.append({
-                            'content_tex': q['content'],
-                            'key': q.get('key', '?'),
-                            'dang': 1 if r'\choice' in q['content'] else (2 if r'\choiceTF' in q['content'] else 3)
-                        })
-                source_name = "AI Generator"
-
-            if not questions:
-                self.btn_web.setChecked(False)
-                QMessageBox.warning(self, "Chưa có câu hỏi", 
-                    f"Tab '{source_name}' chưa có dữ liệu.\nVui lòng tạo đề trước khi bật thi Online.")
-                return
-
-            # [FIX QUAN TRỌNG] CHỈ CHẠY TIẾP KHI NGƯỜI DÙNG BẤM OK
-            dlg = ExamConfigDialog(questions, self)
-            if dlg.exec() == QDialog.DialogCode.Accepted:
-                # Lấy cấu hình đã chốt
-                config = dlg.get_config()
-                final_qs = config['questions']
-                title = config['title']
-                duration = config['time']
-
-                # KHỞI ĐỘNG SERVER (NẾU CHƯA)
-                if not hasattr(self, 'web_thread'):
-                    self.web_thread = WebServerThread(DB_PATH)
-                
-                if not self.web_thread.isRunning():
-                    self.web_thread.start()
-                    QThread.msleep(200)
-
-                # CHẠY WORKER VỚI DỮ LIỆU ĐÃ DUYỆT
-                self.pd_prep = QProgressDialog("Đang khởi tạo phòng thi ảo...", "Hủy", 0, 0, self)
-                self.pd_prep.setWindowModality(Qt.WindowModality.WindowModal)
-                self.pd_prep.show()
-
-                self.prep_worker = ExamPreparerWorker(final_qs, title, duration)
-                self.prep_worker.progress.connect(lambda s: self.pd_prep.setLabelText(s))
-                self.prep_worker.finished.connect(self.on_exam_prepared)
-                self.prep_worker.start()
-            
-            else:
-                # Nếu bấm Cancel/Đóng -> Hủy toàn bộ, nhả nút
-                self.btn_web.setChecked(False)
-                return
-
-        else:
-            # Tắt Server
-            self.btn_web.setText("🌍 Bật Thi Online")
-            self.btn_web.setStyleSheet("background-color: rgba(255, 255, 255, 0.2); color: white;")
-            QMessageBox.information(self, "Đã tắt", "Đã đóng phòng thi ảo.")
-
-    def on_exam_prepared(self, success, data):
-        self.pd_prep.close()
-        
-        if success:
-            # 1. Nạp dữ liệu vào Server (Chưa phát vội)
-            self.web_thread.set_exam_data(data)
-            
-            # 2. Mở màn hình GIÁM SÁT
-            # (Lưu ý: dùng self.monitor_dlg để giữ reference, tránh bị garbage collector xóa)
-            self.monitor_dlg = ExamMonitorDialog(self.web_thread, self)
-            self.monitor_dlg.show() 
-
-            # 3. Đổi màu nút trên App để biết Server đang chạy
-            port = self.web_thread.port
-            ip = self.web_thread.ip_address
-            self.btn_web.setText(f"📡 {ip}:{port}")
-            self.btn_web.setStyleSheet("background-color: #2ecc71; color: white;")
-            
-        else:
-            self.btn_web.setChecked(False)
-            QMessageBox.critical(self, "Lỗi", f"Không thể tạo đề: {data.get('error')}")
 
     def open_classroom_dialog(self):
         """Mở dialog đăng bài lên Classroom (Hỗ trợ Google Forms)"""
@@ -7862,123 +7376,56 @@ class MainApp(QMainWindow):
             self.create_online_classroom_exam() # Hàm mới bên dưới
 
     def create_online_classroom_exam(self):
+        """Tạo đề thi Online (Google Forms) thay thế cho Server Ngrok cũ"""
         # 1. Lấy dữ liệu câu hỏi
         questions, source = self.get_current_exam_questions()
         if not questions: return QMessageBox.warning(self, "Lỗi", "Chưa có câu hỏi!")
 
-        # 2. Hộp thoại Cấu hình thi (Thời gian, Tiêu đề)
+        # 2. Hộp thoại Cấu hình thi (Chủ yếu lấy Tiêu đề & Key)
         dlg = ExamConfigDialog(questions, self)
         if dlg.exec() == QDialog.DialogCode.Accepted:
             config = dlg.get_config()
             
             # 3. Hộp thoại Đăng Classroom
             cls_dlg = ClassroomDialog([], self)
-            cls_dlg.btn_upload.setVisible(True); cls_dlg.btn_upload.setText("🚀 BẮT ĐẦU TỔ CHỨC THI")
+            cls_dlg.btn_upload.setVisible(True)
+            cls_dlg.btn_upload.setText("🚀 TẠO GOOGLE FORM & ĐĂNG BÀI")
             
-            # Ngắt kết nối cũ để tránh lỗi click nhiều lần
             try: cls_dlg.btn_upload.clicked.disconnect()
             except: pass
             
-            # Sự kiện nút bấm
             cls_dlg.btn_upload.clicked.connect(lambda: cls_dlg.accept() if cls_dlg.txt_title.text().strip() else QMessageBox.warning(cls_dlg, "Thiếu", "Nhập tên bài!"))
             
             if cls_dlg.exec() == QDialog.DialogCode.Accepted:
                 course_id = cls_dlg.cb_courses.currentData()
-                # Ưu tiên lấy tên bài từ hộp thoại Classroom, nếu không thì lấy từ cấu hình thi
                 exam_title = cls_dlg.txt_title.text().strip() or config['title']
-                
-                # Hiển thị thanh tiến trình
-                self.pd_prep = QProgressDialog("Đang khởi tạo Server...", "Hủy", 0, 0, self)
+                description = cls_dlg.txt_desc.toPlainText() or f"Thời gian làm bài: {config['time']} phút."
+
+                # 4. CHẠY WORKER TẠO FORM
+                self.pd_prep = QProgressDialog("Đang khởi tạo...", "Hủy", 0, 100, self)
                 self.pd_prep.setWindowModality(Qt.WindowModality.WindowModal)
                 self.pd_prep.show()
                 
-                # Khởi tạo Server nếu chưa có
-                if not hasattr(self, 'web_thread'): self.web_thread = WebServerThread(DB_PATH)
-                
-                # Chạy Worker biên dịch PDF
-                self.prep_worker = ExamPreparerWorker(config['questions'], exam_title, config['time'])
-                
-                # --- HÀM XỬ LÝ KHI PDF ĐÃ SẴN SÀNG ---
-                def on_pdf_ready(success, data):
-                    if not success:
-                        self.pd_prep.close()
-                        QMessageBox.critical(self, "Lỗi tạo đề", data.get('error', 'Lỗi không xác định'))
-                        return
+                # Init Google Manager
+                if not hasattr(self, 'google_mgr'): self.google_mgr = GoogleManagerFull()
+                try: self.google_mgr.authenticate()
+                except Exception as e:
+                    self.pd_prep.close()
+                    QMessageBox.critical(self, "Lỗi Google Auth", str(e))
+                    return
 
-                    # Lưu thông tin lớp học vào data để dùng cho việc chấm điểm sau này
-                    data['courseId'] = course_id
-                    
-                    # --- HÀM XỬ LÝ KHI SERVER ĐÃ ONLINE ---
-                    # --- HÀM XỬ LÝ KHI SERVER ĐÃ ONLINE (ĐÃ SỬA LỖI 400) ---
-                    def on_server_online(public_url):
-                        # [FIX QUAN TRỌNG] Kiểm tra xem URL có hợp lệ không (phải bắt đầu bằng http)
-                        # Nếu Ngrok lỗi, public_url sẽ chứa thông báo lỗi (vd: "Lỗi Ngrok: ...")
-                        if not public_url or not public_url.startswith("http"): 
-                            self.pd_prep.close()
-                            QMessageBox.critical(self, "Lỗi Khởi động Server", 
-                                f"Không thể tạo đường truyền Online!\n\nNguyên nhân: {public_url}\n\n💡 Gợi ý: Hãy mở Terminal và chạy lệnh 'killall ngrok' rồi thử lại.")
-                            return
+                # Chạy Worker
+                self.form_worker = FormGenWorker(self.google_mgr, config['questions'], exam_title, description, course_id)
+                self.form_worker.progress.connect(lambda p, s: (self.pd_prep.setValue(p), self.pd_prep.setLabelText(s)))
+                self.form_worker.finished.connect(self.on_form_created)
+                self.form_worker.error.connect(lambda e: (self.pd_prep.close(), QMessageBox.critical(self, "Lỗi", e)))
+                self.form_worker.start()
 
-                        # 1. Tạo Mã Đề & Link Riêng
-                        import time
-                        exam_id = f"de-{int(time.time())}" # VD: de-1706...
-                        exam_url = f"{public_url}/exam/{exam_id}"
-                        
-                        self.pd_prep.setLabelText(f"Server OK!\nLink: {exam_url}\nĐang gửi vào Classroom...")
-                        
-                        try:
-                            # 2. Đăng bài lên Google Classroom
-                            gg = GoogleManagerFull(); gg.authenticate()
-                            
-                            link_share = {'link': {'url': exam_url, 'title': f"🔴 BÀI THI: {exam_title}"}}
-                            body = {
-                                'title': exam_title,
-                                'description': f"Link bài thi: {exam_url}\nThời gian: {config['time']} phút.",
-                                'workType': 'ASSIGNMENT', 'state': 'PUBLISHED', 'maxPoints': 10, 
-                                'materials': [link_share]
-                            }
-                            # Gửi API tạo bài tập
-                            res = gg.service_class.courses().courseWork().create(courseId=course_id, body=body).execute()
-                            
-                            # 3. Cập nhật ID bài tập và Lưu File
-                            data['courseWorkId'] = res['id']
-                            data['examId'] = exam_id
-                            
-                            self.web_thread.save_exam_file(exam_id, data)
-
-                            self.pd_prep.close()
-                            QMessageBox.information(self, "Thành công", f"Đã tạo bài thi!\nLink vĩnh viễn: {exam_url}")
-                            
-                            self.monitor_dlg = ExamMonitorDialog(self.web_thread, self)
-                            self.monitor_dlg.show()
-                            
-                        except Exception as e:
-                            self.pd_prep.close()
-                            # [MẸO] In lỗi chi tiết ra console để dễ debug
-                            print(f"❌ Lỗi Classroom API: {e}")
-                            QMessageBox.critical(self, "Lỗi Classroom", f"Không thể đăng bài lên lớp học.\nChi tiết: {str(e)}")
-
-                    # Kết nối tín hiệu Server
-                    try: self.web_thread.server_ready.disconnect()
-                    except: pass
-                    self.web_thread.server_ready.connect(on_server_online)
-                    
-                    # Kết nối tín hiệu chấm điểm
-                    try: self.web_thread.result_received.disconnect()
-                    except: pass
-                    self.web_thread.result_received.connect(self.on_student_submit)
-
-                    # Bật Server (Nếu chưa chạy)
-                    if not self.web_thread.isRunning():
-                        self.web_thread.start()
-                    else:
-                        # Nếu đang chạy, tái sử dụng URL cũ
-                        if self.web_thread.public_url:
-                            on_server_online(self.web_thread.public_url)
-
-                # Kết nối Worker
-                self.prep_worker.finished.connect(on_pdf_ready)
-                self.prep_worker.start()
+    def on_form_created(self, url):
+        self.pd_prep.close()
+        msg = f"✅ Đã tạo thành công!\n\nLink Google Form (Vĩnh viễn):\n{url}\n\nĐã được đăng vào Lớp học dưới dạng Bài tập."
+        QMessageBox.information(self, "Thành công", msg)
+        open_file_or_url(url)
 
     # --- THÊM HÀM NÀY VÀO CLASS MainApp ---
     def get_current_exam_questions(self):
