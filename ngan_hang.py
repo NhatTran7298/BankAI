@@ -13,20 +13,9 @@ import warnings
 import socket
 import uuid
 import hashlib
-# --- THÊM DÒNG NÀY ĐỂ SỬA LỖI ---
-from PyQt6.QtWebEngineCore import QWebEngineSettings
 # Third-party imports
 import requests
 import PyQt6
-# Web server imports
-try:
-    from pyngrok import ngrok, conf
-    import uvicorn
-    from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException
-    from fastapi.responses import HTMLResponse, FileResponse
-    from fastapi.middleware.cors import CORSMiddleware
-except ImportError:
-    pass
 
 from google.auth.transport.requests import Request
 from google.oauth2.credentials import Credentials
@@ -35,9 +24,7 @@ from googleapiclient.discovery import build
 from googleapiclient.http import MediaFileUpload
 
 # Thêm vào cùng nhóm với các import PyQt6 hiện có
-from PyQt6.QtWebEngineWidgets import QWebEngineView
-from PyQt6.QtWebChannel import QWebChannel
-from PyQt6.QtCore import QObject, pyqtSlot, QUrl
+from PyQt6.QtCore import QObject, pyqtSlot
 
 # 1. Xác định thư mục gốc của PyQt6
 qt_root = os.path.dirname(PyQt6.__file__)
@@ -4027,18 +4014,12 @@ class FileCleanerDialog(QDialog):
 # =============================================================================
 # MODULE WEB SERVER FIX FINAL: CENTER, TRUE, IMAGES
 # =============================================================================
-import uvicorn
 import subprocess
 import hashlib
 import re
 import os
 import json
 import sqlite3
-from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
-from fastapi.responses import HTMLResponse, FileResponse
-from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import HTMLResponse, FileResponse
-from fastapi.middleware.cors import CORSMiddleware
 from PyQt6.QtCore import QThread
 
 # --- CẤU HÌNH ---
@@ -4652,167 +4633,6 @@ manager = ConnectionManager()
 
 
 # --- CẬP NHẬT: WEB SERVER THREAD (FIX LỖI GMAIL CÁ NHÂN) ---
-class WebServerThread(QThread):
-    students_changed = pyqtSignal(list)
-    server_ready = pyqtSignal(str)
-    result_received = pyqtSignal(str, float)
-
-    def __init__(self, db_path):
-        super().__init__()
-        self.db_path = db_path
-        self.port = 8080
-        
-        # [QUAN TRỌNG] Nhớ điền Token thật của bạn vào đây
-        # Ví dụ: self.ngrok_auth_token = "2Alk..."
-        self.ngrok_auth_token = "38b8oxhy3hT98ZoeqO7kl8RJaJP_axFQ8v4mjEtV5EvSwLzb"
-        
-        self.public_url = ""
-        
-        # Tự động lấy IP mạng LAN
-        try:
-            s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-            s.connect(("8.8.8.8", 80))
-            self.ip_address = s.getsockname()[0]
-            s.close()
-        except:
-            self.ip_address = "127.0.0.1"
-        
-        self.gg_sync = None 
-        
-        # Thư mục chứa các file đề thi riêng biệt
-        self.exam_dir = os.path.join(os.path.expanduser("~"), ".bankai_exams")
-        if not os.path.exists(self.exam_dir): os.makedirs(self.exam_dir)
-
-    def save_exam_file(self, exam_id, data):
-        """Lưu đề thi thành file riêng biệt"""
-        filepath = os.path.join(self.exam_dir, f"{exam_id}.json")
-        with open(filepath, "w", encoding="utf-8") as f:
-            json.dump(data, f, ensure_ascii=False, indent=4)
-        print(f"💾 Đã lưu đề thi: {exam_id}")
-
-    def load_exam_file(self, exam_id):
-        """Đọc file đề thi theo ID"""
-        filepath = os.path.join(self.exam_dir, f"{exam_id}.json")
-        if os.path.exists(filepath):
-            with open(filepath, "r", encoding="utf-8") as f:
-                return json.load(f)
-        return None
-
-    def sync_score(self, exam_data, name, email, score):
-        """Đồng bộ điểm lên Google Classroom (Cần dữ liệu của đúng đề đó)"""
-        cid = exam_data.get('courseId')
-        cwid = exam_data.get('courseWorkId')
-        if not cid or not cwid: return
-
-        if not self.gg_sync:
-            try: self.gg_sync = GoogleManagerFull(); self.gg_sync.authenticate()
-            except: return
-
-        try:
-            print(f"🔄 Đang đồng bộ điểm cho đề {exam_data.get('title')}...")
-            service = self.gg_sync.service_class
-            # ... (Giữ nguyên logic tìm HS và chấm điểm như cũ) ...
-            students = service.courses().students().list(courseId=cid).execute().get('students', [])
-            user_id = None
-            target_email = email.strip().lower()
-            target_name = name.strip().lower()
-            
-            for s in students:
-                p = s.get('profile', {})
-                api_email = p.get('emailAddress', '').lower()
-                api_name = p.get('name', {}).get('fullName', '').lower()
-                if api_email and api_email == target_email: user_id = s['userId']; break
-                if not api_email and api_name == target_name: user_id = s['userId']; break
-            
-            if user_id:
-                subs = service.courses().courseWork().studentSubmissions().list(
-                    courseId=cid, courseWorkId=cwid, userId=user_id).execute().get('studentSubmissions', [])
-                if subs:
-                    body = {'draftGrade': float(score), 'assignedGrade': float(score)}
-                    service.courses().courseWork().studentSubmissions().patch(
-                        courseId=cid, courseWorkId=cwid, id=subs[0]['id'], 
-                        updateMask='assignedGrade,draftGrade', body=body).execute()
-                    print("✅ Đã vào sổ điểm!")
-        except Exception as e: print(f"❌ Lỗi Sync: {e}")
-
-    def run(self):
-        if self.ngrok_auth_token and "NHAP_TOKEN" not in self.ngrok_auth_token:
-            conf.get_default().auth_token = self.ngrok_auth_token
-        
-        conf.get_default().region = "ap"
-        
-        app = FastAPI()
-        app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_credentials=True, allow_methods=["*"], allow_headers=["*"])
-
-        # URL ĐỘNG: /exam/{exam_id} -> Trả về giao diện thi
-        @app.get("/exam/{exam_id}")
-        async def get_exam_ui(exam_id: str):
-            # Kiểm tra xem đề có tồn tại không
-            if self.load_exam_file(exam_id):
-                return HTMLResponse(content=WEB_UI_TEMPLATE)
-            return HTMLResponse(content="<h1>❌ Đề thi không tồn tại hoặc đã bị xóa!</h1>")
-
-        @app.get("/api/pdf/{filename}")
-        async def get_pdf(filename: str):
-            path = os.path.join(os.path.expanduser("~"), ".bankai_build", filename)
-            return FileResponse(path) if os.path.exists(path) else {"error": "PDF not found"}
-
-        @app.websocket("/ws")
-        async def websocket_endpoint(websocket: WebSocket):
-            await manager.connect(websocket)
-            try:
-                while True:
-                    data = json.loads(await websocket.receive_text())
-                    
-                    if data.get('type') == 'JOIN':
-                        exam_id = data.get('exam_id')
-                        exam_data = self.load_exam_file(exam_id)
-                        
-                        if exam_data:
-                            manager.register(websocket, data['id'], f"{data['name']} [{exam_id}]")
-                            # Gửi đúng đề thi đó cho học sinh
-                            await websocket.send_json({"type": "START_EXAM", "data": exam_data})
-                        else:
-                            await websocket.send_json({"type": "ERROR", "message": "Không tìm thấy dữ liệu đề thi!"})
-
-                    elif data.get('type') == 'SUBMIT':
-                        exam_id = data.get('exam_id')
-                        exam_data = self.load_exam_file(exam_id)
-                        if exam_data:
-                            # Lưu kết quả
-                            try:
-                                conn = sqlite3.connect(self.db_path)
-                                conn.execute("INSERT INTO exam_results (student_name, exam_title, score, detail) VALUES (?, ?, ?, ?)",
-                                    (f"{data['name']} ({data['email']})", exam_data.get('title'), data['score'], json.dumps(data['detail'])))
-                                conn.commit(); conn.close()
-                                self.result_received.emit(f"{data['name']} - {exam_data.get('title')}", float(data['score']))
-                                
-                                # Đồng bộ Classroom
-                                self.sync_score(exam_data, data['name'], data['email'], data['score'])
-                            except: pass
-
-            except: pass
-
-        # Kết nối Ngrok
-        try:
-            ngrok.kill()
-            # Kết nối ngrok đơn giản, không dùng domain tĩnh để tránh lỗi quyền
-            tunnel = ngrok.connect(self.port)
-            self.public_url = tunnel.public_url
-            print(f"✅ Ngrok Connected: {self.public_url}")
-            self.server_ready.emit(self.public_url)
-        except Exception as e:
-            print(f"❌ Ngrok Error: {e}")
-            self.server_ready.emit(f"Lỗi Ngrok: {str(e)}")
-
-        # Chạy Uvicorn Server
-        # host="0.0.0.0" để cho phép truy cập từ LAN và Ngrok
-        # [FIX] Thêm forwarded_allow_ips='*' để sửa lỗi WebSocket 'Bad Response' qua Ngrok
-        uvicorn.run(app, host="0.0.0.0", port=self.port, log_level="info", proxy_headers=True, forwarded_allow_ips='*')
-# =============================================================================
-#  MODULE GOOGLE CLASSROOM & PDF (THÊM MỚI VÀO ĐÂY)
-# =============================================================================
-
 class StatisticsDashboard(QDialog):
     """Bảng Dashboard thống kê (Giao diện Nâu - Cam Luxury)"""
     def __init__(self, backend, parent=None):
@@ -5778,153 +5598,15 @@ class ExamConfigDialog(QDialog):
             "questions": self.final_questions
         }
 
-class ExamMonitorDialog(QDialog):
-    """Màn hình GIÁM SÁT & GIAO BÀI"""
-    def __init__(self, web_thread, parent=None):
-        super().__init__(parent)
-        self.web_thread = web_thread
-        self.setWindowTitle(f"Phòng Thi Ảo - Đang giám sát...")
-        self.resize(1000, 600)
-        
-        layout = QVBoxLayout(self)
-
-        # 1. HEADER: HƯỚNG DẪN KẾT NỐI
-        # Hiển thị to rõ để giáo viên chiếu lên bảng hoặc đọc cho học sinh
-        top_frame = QFrame(); top_frame.setStyleSheet("background-color: #e8f5e9; border-radius: 8px; padding: 10px;")
-        hl = QHBoxLayout(top_frame)
-        
-        lbl_instruct = QLabel("HỌC SINH TRUY CẬP WIFI VÀ VÀO ĐỊA CHỈ:")
-        lbl_instruct.setFont(QFont("Arial", 10, QFont.Weight.Bold))
-        
-        url = f"http://{web_thread.ip_address}:{web_thread.port}"
-        lbl_url = QLabel(url)
-        lbl_url.setFont(QFont("Arial", 24, QFont.Weight.Bold))
-        lbl_url.setStyleSheet("color: #d35400;") # Màu cam nổi bật
-        lbl_url.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
-
-        hl.addWidget(lbl_instruct)
-        hl.addWidget(lbl_url)
-        layout.addWidget(top_frame)
-
-        # 2. BẢNG DANH SÁCH MÁY KẾT NỐI
-        self.lbl_count = QLabel("Hiện có: 0 máy đang kết nối")
-        layout.addWidget(self.lbl_count)
-
-        self.table = QTableWidget()
-        self.table.setColumnCount(5)
-        self.table.setHorizontalHeaderLabels(["Chọn", "Tên Học Sinh", "ĐIỂM SỐ", "Trạng Thái", "ID Máy"])
-        self.table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
-        layout.addWidget(self.table)
-
-        # 3. THANH CÔNG CỤ DƯỚI
-        btn_layout = QHBoxLayout()
-        
-        self.btn_select_all = QPushButton("Chọn tất cả")
-        self.btn_select_all.clicked.connect(self.select_all)
-        
-        self.btn_distribute = QPushButton("🚀 GIAO BÀI NGAY")
-        self.btn_distribute.setMinimumHeight(50)
-        self.btn_distribute.setFont(QFont("Arial", 12, QFont.Weight.Bold))
-        self.btn_distribute.setStyleSheet("background-color: #2ecc71; color: white; border-radius: 5px;")
-        self.btn_distribute.clicked.connect(self.distribute_action)
-
-        btn_layout.addWidget(self.btn_select_all)
-        btn_layout.addWidget(self.btn_distribute)
-        layout.addLayout(btn_layout)
-
-        # KẾT NỐI SIGNAL: Cập nhật bảng ngay khi có HS vào/ra
-        self.web_thread.students_changed.connect(self.update_table)
-
-    def update_table(self, students):
-        """Vẽ lại bảng, giữ nguyên điểm số nếu đã có"""
-        # Lưu lại điểm số hiện tại trên bảng để không bị mất khi redraw
-        current_scores = {}
-        for r in range(self.table.rowCount()):
-            name = self.table.item(r, 1).text()
-            score_item = self.table.item(r, 2)
-            if score_item and score_item.text():
-                current_scores[name] = score_item.text()
-
-        self.table.setRowCount(0)
-        for row, s in enumerate(students):
-            self.table.insertRow(row)
-            # Cột 0: Checkbox
-            chk_w = QWidget(); chk = QCheckBox(); chk.setChecked(True); 
-            l = QHBoxLayout(chk_w); l.addWidget(chk); l.setAlignment(Qt.AlignmentFlag.AlignCenter); l.setContentsMargins(0,0,0,0)
-            self.table.setCellWidget(row, 0, chk_w)
-            
-            # Cột 1: Tên
-            self.table.setItem(row, 1, QTableWidgetItem(s['name']))
-            
-            # Cột 2: Điểm (Load lại nếu có)
-            score_val = current_scores.get(s['name'], "")
-            item_score = QTableWidgetItem(str(score_val))
-            item_score.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
-            item_score.setFont(QFont("Arial", 12, QFont.Weight.Bold))
-            item_score.setForeground(QColor("red"))
-            self.table.setItem(row, 2, item_score)
-
-            # Cột 3: Trạng thái
-            stt = "Đang làm bài" if s['status'] == 'doing' else "Chờ đề"
-            if score_val: stt = "Đã nộp bài" # Nếu có điểm thì là đã nộp
-            self.table.setItem(row, 3, QTableWidgetItem(stt))
-            
-            # Cột 4: ID
-            self.table.setItem(row, 4, QTableWidgetItem(s['id'][:6]))
-
-    def update_score(self, name, score):
-        """Hàm cập nhật điểm trực tiếp khi nhận signal"""
-        found = False
-        for r in range(self.table.rowCount()):
-            if self.table.item(r, 1).text() == name:
-                self.table.setItem(r, 2, QTableWidgetItem(str(score)))
-                self.table.setItem(r, 3, QTableWidgetItem("✅ Đã nộp"))
-                found = True
-                break
-        
-        if not found:
-            # Nếu học sinh nộp bài mà chưa có trong danh sách (hiếm gặp), thêm mới
-            row = self.table.rowCount()
-            self.table.insertRow(row)
-            self.table.setItem(row, 1, QTableWidgetItem(name))
-            self.table.setItem(row, 2, QTableWidgetItem(str(score)))
-            self.table.setItem(row, 3, QTableWidgetItem("✅ Đã nộp"))
-
-    def select_all(self):
-        # Logic chọn tất cả checkbox
-        for row in range(self.table.rowCount()):
-            w = self.table.cellWidget(row, 0)
-            chk = w.findChild(QCheckBox)
-            chk.setChecked(True)
-
-    def distribute_action(self):
-        """Gửi lệnh phát đề cho các máy được chọn"""
-        targets = []
-        for row in range(self.table.rowCount()):
-            w = self.table.cellWidget(row, 0)
-            chk = w.findChild(QCheckBox)
-            if chk.isChecked():
-                # Lấy ID từ data ẩn
-                uid = self.table.item(row, 1).data(Qt.ItemDataRole.UserRole)
-                targets.append(uid)
-        
-        if not targets:
-            QMessageBox.warning(self, "Chưa chọn máy", "Vui lòng chọn ít nhất một học sinh để giao bài!")
-            return
-
-        # GỌI SERVER PHÁT ĐỀ
-        self.web_thread.distribute_exam(targets)
-        QMessageBox.information(self, "Thành công", f"Đã giao bài cho {len(targets)} học sinh!")
-
-class MatrixEditorDialog(QDialog):
+class MatrixEditorWidget(QWidget):
     """Cửa sổ soạn ma trận chuyên nghiệp & Review đề (Có Splitter & Hỗ trợ Tổng hợp 3 khối)"""
     def __init__(self, backend, parent=None):
         super().__init__(parent)
         self.bk = backend
-        self.setWindowTitle("🎛️ BỘ ĐIỀU KHIỂN MA TRẬN & TRÍCH XUẤT ĐỀ (TỔNG HỢP)")
-        self.setWindowState(Qt.WindowState.WindowMaximized) 
+        # self.setWindowTitle("🎛️ BỘ ĐIỀU KHIỂN MA TRẬN & TRÍCH XUẤT ĐỀ (TỔNG HỢP)")
+        # self.setWindowState(Qt.WindowState.WindowMaximized)
         self.setStyleSheet("""
-            QDialog { background-color: #fdfdfd; }
+            QWidget { background-color: #fdfdfd; }
             QGroupBox { font-weight: bold; border: 1px solid #ccc; border-radius: 8px; margin-top: 10px; padding: 15px; }
             QGroupBox::title { subcontrol-origin: margin; left: 10px; padding: 0 5px; color: #2c3e50; }
             QTableWidget { background-color: white; gridline-color: #eee; border: 1px solid #ddd; }
@@ -6205,52 +5887,42 @@ class MatrixEditorDialog(QDialog):
         if not self.final_questions:
             QMessageBox.warning(self, "Trống", "Chưa có câu hỏi nào được chọn!")
             return
-        self.accept()
 
-class UIBridge(QObject):
-    """Cầu nối xử lý logic giữa Giao diện Dashboard và Python"""
-    def __init__(self, backend, parent=None): 
-        super().__init__(parent)
-        self.bk = backend
-        self.main_app = parent # Tham chiếu đến cửa sổ chính để điều khiển Tab
+        main_app = self.window()
+        if not hasattr(main_app, 'current_exam'):
+             p = self.parent()
+             while p:
+                 if hasattr(p, 'current_exam'):
+                     main_app = p
+                     break
+                 p = p.parent()
 
-    # 1. HÀM LẤY SỐ LIỆU (Để Dashboard hiển thị)
-    @pyqtSlot(result=str)
-    def get_dashboard_data(self):
-        try:
-            # Lấy số liệu thực tế từ Database
-            total_q = self.bk.count_all_questions() if hasattr(self.bk, 'count_all_questions') else 0
-            # Giả lập các số liệu khác (hoặc lấy từ DB nếu có hàm)
-            data = {
-                "total": total_q,      
-                "exams": 85,          
-                "students": 24,       
-                "ai_requests": 1205
-            }
-            return json.dumps(data)
-        except Exception as e:
-            print(f"Lỗi lấy dữ liệu: {e}")
-            return json.dumps({"total": "N/A"})
+        if not hasattr(main_app, 'current_exam'):
+             print("Không tìm thấy MainApp để chuyển dữ liệu.")
+             return
 
-    # 2. HÀM CHUYỂN TAB (Để các nút Sidebar hoạt động)
-    @pyqtSlot(int)
-    def switch_tab(self, index):
-        """Chuyển sang tab tương ứng trong QTabWidget"""
-        if self.main_app and hasattr(self.main_app, 'stack'):
-            print(f"Chuyển sang tab số: {index}")
-            self.main_app.stack.setCurrentIndex(index)
+        # 1. Lưu vào biến toàn cục của MainApp
+        main_app.current_exam = self.final_questions
 
-    # 3. HÀM MỞ CHỨC NĂNG CỤ THỂ
-    @pyqtSlot()
-    def open_create_exam(self):
-        """Mở tab tạo đề (Ví dụ tab số 2)"""
-        self.switch_tab(2) 
+        # 2. Chuyển sang tab Soạn đề và hiển thị lên đó
+        if hasattr(main_app, 'exam_lst'):
+            main_app.exam_lst.clear_all()
+            root_map = main_app.exam_lst.roots
+            for q in self.final_questions:
+                dang = q.get('dang', 4)
+                root = root_map.get(dang, root_map[4])
+
+                content_preview = q['content_tex'][:60].replace("\n", " ")
+                item = QTreeWidgetItem([f"[ID:{q['id']}] {q.get('level','?')} | {content_preview}..."])
+                item.setData(0, Qt.ItemDataRole.UserRole, q)
+                item.setToolTip(0, q['content_tex'])
+                root.addChild(item)
         
-    @pyqtSlot()
-    def open_settings(self):
-        """Mở hộp thoại cài đặt"""
-        # self.main_app.open_settings_dialog() # Nếu có hàm này
-        print("Mở cài đặt...")
+        # Chuyển tab
+        if hasattr(main_app, 'stack'):
+            main_app.stack.setCurrentIndex(1) # Tab Index 1 là Soạn thủ công
+
+        QMessageBox.information(self, "Thành công", f"Đã chuyển {len(self.final_questions)} câu hỏi sang danh sách 'Đề đang soạn'.")
 
 class MainApp(QMainWindow):
     def apply_theme(self):
@@ -6521,12 +6193,6 @@ class MainApp(QMainWindow):
         self.setWindowTitle("BankAI Pro - 2025 Matrix Edition")
         self.setGeometry(100, 100, 1400, 900)
         self.setStyleSheet(APP_STYLE)
-        # --- THÊM ĐOẠN NÀY ---
-        # Khởi tạo Cầu nối
-        self.bridge = UIBridge(self.bk, self)
-        self.channel = QWebChannel()
-        self.channel.registerObject("py_bridge", self.bridge)
-        # ---------------------
 
         w = QWidget(); self.setCentralWidget(w); l = QVBoxLayout(w)
         l.addWidget(self.create_toolbar())
@@ -6627,26 +6293,6 @@ class MainApp(QMainWindow):
         
         # --- PHẢI: CÁC NÚT CHỨC NĂNG ---
         
-        # 1. Nút Bật Web Server (MỚI THÊM)
-        self.btn_web = QPushButton("🌍 Bật Thi Online")
-        self.btn_web.setCheckable(True) # Chế độ bật/tắt
-        self.btn_web.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.btn_web.setStyleSheet("""
-            QPushButton {
-                background-color: rgba(255, 255, 255, 0.2); 
-                border: 1px solid rgba(255, 255, 255, 0.5);
-                color: #ffffff; padding: 8px 15px; border-radius: 6px; font-weight: 700;
-            }
-            QPushButton:hover { background-color: rgba(255, 255, 255, 0.3); }
-            QPushButton:checked { 
-                background-color: #2ecc71; /* Màu xanh lá khi đang bật */
-                border-color: #27ae60; 
-                color: white;
-            }
-        """)
-        self.btn_web.clicked.connect(self.toggle_web_server)
-        layout.addWidget(self.btn_web)
-
         # 2. Menu Tiện ích (Giữ nguyên)
         btn_tools = QPushButton("🛠️  Tiện ích  ▼")
         btn_tools.setCursor(Qt.CursorShape.PointingHandCursor)
@@ -6813,8 +6459,45 @@ class MainApp(QMainWindow):
     # Lưu ý: Copy lại các hàm đó vào đây nếu bạn xóa nhầm, hoặc chỉ cần paste đoạn code bên dưới vào cuối class MainApp
     
     def create_home_tab(self):
-        # Thay thế toàn bộ code cũ bằng 1 dòng này để dùng giao diện Stitch
-        return self.create_web_tab("dashboard.html")
+        w = QWidget()
+        layout = QGridLayout(w)
+        layout.setSpacing(20)
+        layout.setContentsMargins(30, 30, 30, 30)
+
+        # Card 1: Ngân hàng câu hỏi
+        card1 = self.create_dashboard_card(
+            "Ngân hàng câu hỏi",
+            "Quản lý, tìm kiếm và chỉnh sửa câu hỏi trong kho dữ liệu.",
+            "📚", "Truy cập ngay", lambda: self.stack.setCurrentIndex(1)
+        )
+
+        # Card 2: Tạo đề Ma trận
+        card2 = self.create_dashboard_card(
+            "Tạo đề Ma trận 2025",
+            "Xây dựng đề thi theo cấu trúc ma trận mới nhất của Bộ GD&ĐT.",
+            "🎲", "Bắt đầu tạo", lambda: self.stack.setCurrentIndex(2), color="#2980b9"
+        )
+
+        # Card 3: Tạo đề AI
+        card3 = self.create_dashboard_card(
+            "Tạo đề thông minh AI",
+            "Sử dụng AI để sinh đề thi tương tự hoặc biến thể câu hỏi.",
+            "🤖", "Thử ngay", lambda: self.stack.setCurrentIndex(3), color="#8e44ad"
+        )
+
+        # Card 4: Nhập dữ liệu
+        card4 = self.create_dashboard_card(
+            "Nhập dữ liệu TeX",
+            "Import câu hỏi từ file LaTeX vào ngân hàng.",
+            "📥", "Chọn file", self.import_files, color="#27ae60"
+        )
+
+        layout.addWidget(card1, 0, 0)
+        layout.addWidget(card2, 0, 1)
+        layout.addWidget(card3, 1, 0)
+        layout.addWidget(card4, 1, 1)
+
+        return w
 
     def quick_save_manual_exam(self):
         """Lưu nhanh danh sách câu hỏi hiện tại ra file TeX (Không trộn, không cấu hình)"""
@@ -6969,44 +6652,7 @@ class MainApp(QMainWindow):
 
 # Thay thế hàm create_matrix_tab trong class MainApp
     def create_matrix_tab(self):
-        # Thay thế toàn bộ code cũ
-        return self.create_web_tab("matrix_editor.html")
-
-    def open_matrix_window(self):
-        """Mở cửa sổ Ma trận riêng biệt"""
-        dlg = MatrixEditorDialog(self.bk, self)
-        
-        # Nếu người dùng bấm "Hoàn tất & Tạo đề" (Accept)
-        if dlg.exec() == QDialog.DialogCode.Accepted:
-            questions = dlg.final_questions
-            
-            if questions:
-                # 1. Lưu vào biến toàn cục của MainApp
-                self.current_exam = questions
-                
-                # 2. Cập nhật thông báo
-                self.lbl_matrix_status.setText(f"✅ Đã tạo thành công đề thi gồm {len(questions)} câu.\n"
-                                               "Bạn có thể bấm nút 'Bật Thi Online' hoặc chuyển sang tab 'Soạn đề' để chỉnh sửa thêm.")
-                
-                # 3. (Tùy chọn) Chuyển sang tab Soạn đề và hiển thị lên đó
-                # Xóa cũ
-                self.exam_lst.clear_all()
-                # Thêm mới (Cần convert format câu hỏi sang format của TreeWidget)
-                root_map = self.exam_lst.roots
-                for q in questions:
-                    # Tạo item cho TreeWidget
-                    dang = q.get('dang', 4)
-                    root = root_map.get(dang, root_map[4])
-                    
-                    content_preview = q['content_tex'][:60].replace("\n", " ")
-                    item = QTreeWidgetItem([f"[ID:{q['id']}] {q.get('level','?')} | {content_preview}..."])
-                    item.setData(0, Qt.ItemDataRole.UserRole, q)
-                    item.setToolTip(0, q['content_tex'])
-                    root.addChild(item)
-                
-                # Chuyển tab để user thấy kết quả
-                self.stack.setCurrentIndex(1) # Tab Index 1 là Soạn thủ công
-                QMessageBox.information(self, "Thành công", f"Đã chuyển {len(questions)} câu hỏi sang danh sách 'Đề đang soạn'.")
+        return MatrixEditorWidget(self.bk, self)
 
     # =========================================================================
     # 2. HÀM MỞ THƯ VIỆN (Thêm mới ngay bên dưới hàm trên)
@@ -7670,100 +7316,6 @@ class MainApp(QMainWindow):
         dlg = FileCleanerDialog(self.ai, self)
         dlg.exec()
 
-    # Trong class MainApp
-    def toggle_web_server(self):
-        """Bật/Tắt Web Server - Fix lỗi tự chạy khi chưa bấm OK"""
-        if self.btn_web.isChecked():
-            # 1. LẤY DỮ LIỆU TỪ TAB ĐANG MỞ
-            questions = []
-            source_name = ""
-            current_idx = self.stack.currentIndex()
-
-            if current_idx == 1: # Thủ công
-                if hasattr(self.exam_lst, 'get_all_questions'):
-                    questions = self.exam_lst.get_all_questions()
-                source_name = "Soạn Thủ Công"
-            elif current_idx == 2: # Ma trận
-                if hasattr(self, 'current_exam') and self.current_exam:
-                    questions = self.current_exam
-                source_name = "Ma Trận"
-            elif current_idx == 3: # AI
-                if hasattr(self, 'gen_res') and self.gen_res:
-                    first_code = list(self.gen_res.keys())[0]
-                    raw_qs = self.gen_res[first_code]
-                    for q in raw_qs:
-                        questions.append({
-                            'content_tex': q['content'],
-                            'key': q.get('key', '?'),
-                            'dang': 1 if r'\choice' in q['content'] else (2 if r'\choiceTF' in q['content'] else 3)
-                        })
-                source_name = "AI Generator"
-
-            if not questions:
-                self.btn_web.setChecked(False)
-                QMessageBox.warning(self, "Chưa có câu hỏi", 
-                    f"Tab '{source_name}' chưa có dữ liệu.\nVui lòng tạo đề trước khi bật thi Online.")
-                return
-
-            # [FIX QUAN TRỌNG] CHỈ CHẠY TIẾP KHI NGƯỜI DÙNG BẤM OK
-            dlg = ExamConfigDialog(questions, self)
-            if dlg.exec() == QDialog.DialogCode.Accepted:
-                # Lấy cấu hình đã chốt
-                config = dlg.get_config()
-                final_qs = config['questions']
-                title = config['title']
-                duration = config['time']
-
-                # KHỞI ĐỘNG SERVER (NẾU CHƯA)
-                if not hasattr(self, 'web_thread'):
-                    self.web_thread = WebServerThread(DB_PATH)
-                
-                if not self.web_thread.isRunning():
-                    self.web_thread.start()
-                    QThread.msleep(200)
-
-                # CHẠY WORKER VỚI DỮ LIỆU ĐÃ DUYỆT
-                self.pd_prep = QProgressDialog("Đang khởi tạo phòng thi ảo...", "Hủy", 0, 0, self)
-                self.pd_prep.setWindowModality(Qt.WindowModality.WindowModal)
-                self.pd_prep.show()
-
-                self.prep_worker = ExamPreparerWorker(final_qs, title, duration)
-                self.prep_worker.progress.connect(lambda s: self.pd_prep.setLabelText(s))
-                self.prep_worker.finished.connect(self.on_exam_prepared)
-                self.prep_worker.start()
-            
-            else:
-                # Nếu bấm Cancel/Đóng -> Hủy toàn bộ, nhả nút
-                self.btn_web.setChecked(False)
-                return
-
-        else:
-            # Tắt Server
-            self.btn_web.setText("🌍 Bật Thi Online")
-            self.btn_web.setStyleSheet("background-color: rgba(255, 255, 255, 0.2); color: white;")
-            QMessageBox.information(self, "Đã tắt", "Đã đóng phòng thi ảo.")
-
-    def on_exam_prepared(self, success, data):
-        self.pd_prep.close()
-        
-        if success:
-            # 1. Nạp dữ liệu vào Server (Chưa phát vội)
-            self.web_thread.set_exam_data(data)
-            
-            # 2. Mở màn hình GIÁM SÁT
-            # (Lưu ý: dùng self.monitor_dlg để giữ reference, tránh bị garbage collector xóa)
-            self.monitor_dlg = ExamMonitorDialog(self.web_thread, self)
-            self.monitor_dlg.show() 
-
-            # 3. Đổi màu nút trên App để biết Server đang chạy
-            port = self.web_thread.port
-            ip = self.web_thread.ip_address
-            self.btn_web.setText(f"📡 {ip}:{port}")
-            self.btn_web.setStyleSheet("background-color: #2ecc71; color: white;")
-            
-        else:
-            self.btn_web.setChecked(False)
-            QMessageBox.critical(self, "Lỗi", f"Không thể tạo đề: {data.get('error')}")
 
     def open_classroom_dialog(self):
         """Mở dialog đăng bài lên Classroom (Hỗ trợ Google Forms)"""
@@ -7909,138 +7461,8 @@ class MainApp(QMainWindow):
     # Thêm vào trong class MainApp
     def show_classroom_menu(self):
         """Menu chọn chế độ khi bấm nút Google Classroom"""
-        menu = QMenu(self)
-        menu.setStyleSheet("QMenu { font-size: 14px; padding: 5px; } QMenu::item { padding: 10px 20px; }")
-        
-        act_upload = menu.addAction("📤 Đăng bài tập (PDF/Form)")
-        act_exam = menu.addAction("🌍 Tổ chức Thi Online (Global)")
-        
-        # Lấy vị trí nút chuột để hiện menu
-        action = menu.exec(QCursor.pos())
-        
-        if action == act_upload:
-            self.open_classroom_dialog() # Hàm cũ
-        elif action == act_exam:
-            self.create_online_classroom_exam() # Hàm mới bên dưới
+        self.open_classroom_dialog()
 
-    def create_online_classroom_exam(self):
-        # 1. Lấy dữ liệu câu hỏi
-        questions, source = self.get_current_exam_questions()
-        if not questions: return QMessageBox.warning(self, "Lỗi", "Chưa có câu hỏi!")
-
-        # 2. Hộp thoại Cấu hình thi (Thời gian, Tiêu đề)
-        dlg = ExamConfigDialog(questions, self)
-        if dlg.exec() == QDialog.DialogCode.Accepted:
-            config = dlg.get_config()
-            
-            # 3. Hộp thoại Đăng Classroom
-            cls_dlg = ClassroomDialog([], self)
-            cls_dlg.btn_upload.setVisible(True); cls_dlg.btn_upload.setText("🚀 BẮT ĐẦU TỔ CHỨC THI")
-            
-            # Ngắt kết nối cũ để tránh lỗi click nhiều lần
-            try: cls_dlg.btn_upload.clicked.disconnect()
-            except: pass
-            
-            # Sự kiện nút bấm
-            cls_dlg.btn_upload.clicked.connect(lambda: cls_dlg.accept() if cls_dlg.txt_title.text().strip() else QMessageBox.warning(cls_dlg, "Thiếu", "Nhập tên bài!"))
-            
-            if cls_dlg.exec() == QDialog.DialogCode.Accepted:
-                course_id = cls_dlg.cb_courses.currentData()
-                # Ưu tiên lấy tên bài từ hộp thoại Classroom, nếu không thì lấy từ cấu hình thi
-                exam_title = cls_dlg.txt_title.text().strip() or config['title']
-                
-                # Hiển thị thanh tiến trình
-                self.pd_prep = QProgressDialog("Đang khởi tạo Server...", "Hủy", 0, 0, self)
-                self.pd_prep.setWindowModality(Qt.WindowModality.WindowModal)
-                self.pd_prep.show()
-                
-                # Khởi tạo Server nếu chưa có
-                if not hasattr(self, 'web_thread'): self.web_thread = WebServerThread(DB_PATH)
-                
-                # Chạy Worker biên dịch PDF
-                self.prep_worker = ExamPreparerWorker(config['questions'], exam_title, config['time'])
-                
-                # --- HÀM XỬ LÝ KHI PDF ĐÃ SẴN SÀNG ---
-                def on_pdf_ready(success, data):
-                    if not success:
-                        self.pd_prep.close()
-                        QMessageBox.critical(self, "Lỗi tạo đề", data.get('error', 'Lỗi không xác định'))
-                        return
-
-                    # Lưu thông tin lớp học vào data để dùng cho việc chấm điểm sau này
-                    data['courseId'] = course_id
-                    
-                    # --- HÀM XỬ LÝ KHI SERVER ĐÃ ONLINE ---
-                    # --- HÀM XỬ LÝ KHI SERVER ĐÃ ONLINE (ĐÃ SỬA LỖI 400) ---
-                    def on_server_online(public_url):
-                        # [FIX QUAN TRỌNG] Kiểm tra xem URL có hợp lệ không (phải bắt đầu bằng http)
-                        # Nếu Ngrok lỗi, public_url sẽ chứa thông báo lỗi (vd: "Lỗi Ngrok: ...")
-                        if not public_url or not public_url.startswith("http"): 
-                            self.pd_prep.close()
-                            QMessageBox.critical(self, "Lỗi Khởi động Server", 
-                                f"Không thể tạo đường truyền Online!\n\nNguyên nhân: {public_url}\n\n💡 Gợi ý: Hãy mở Terminal và chạy lệnh 'killall ngrok' rồi thử lại.")
-                            return
-
-                        # 1. Tạo Mã Đề & Link Riêng
-                        import time
-                        exam_id = f"de-{int(time.time())}" # VD: de-1706...
-                        exam_url = f"{public_url}/exam/{exam_id}"
-                        
-                        self.pd_prep.setLabelText(f"Server OK!\nLink: {exam_url}\nĐang gửi vào Classroom...")
-                        
-                        try:
-                            # 2. Đăng bài lên Google Classroom
-                            gg = GoogleManagerFull(); gg.authenticate()
-                            
-                            link_share = {'link': {'url': exam_url, 'title': f"🔴 BÀI THI: {exam_title}"}}
-                            body = {
-                                'title': exam_title,
-                                'description': f"Link bài thi: {exam_url}\nThời gian: {config['time']} phút.",
-                                'workType': 'ASSIGNMENT', 'state': 'PUBLISHED', 'maxPoints': 10, 
-                                'materials': [link_share]
-                            }
-                            # Gửi API tạo bài tập
-                            res = gg.service_class.courses().courseWork().create(courseId=course_id, body=body).execute()
-                            
-                            # 3. Cập nhật ID bài tập và Lưu File
-                            data['courseWorkId'] = res['id']
-                            data['examId'] = exam_id
-                            
-                            self.web_thread.save_exam_file(exam_id, data)
-
-                            self.pd_prep.close()
-                            QMessageBox.information(self, "Thành công", f"Đã tạo bài thi!\nLink vĩnh viễn: {exam_url}")
-                            
-                            self.monitor_dlg = ExamMonitorDialog(self.web_thread, self)
-                            self.monitor_dlg.show()
-                            
-                        except Exception as e:
-                            self.pd_prep.close()
-                            # [MẸO] In lỗi chi tiết ra console để dễ debug
-                            print(f"❌ Lỗi Classroom API: {e}")
-                            QMessageBox.critical(self, "Lỗi Classroom", f"Không thể đăng bài lên lớp học.\nChi tiết: {str(e)}")
-
-                    # Kết nối tín hiệu Server
-                    try: self.web_thread.server_ready.disconnect()
-                    except: pass
-                    self.web_thread.server_ready.connect(on_server_online)
-                    
-                    # Kết nối tín hiệu chấm điểm
-                    try: self.web_thread.result_received.disconnect()
-                    except: pass
-                    self.web_thread.result_received.connect(self.on_student_submit)
-
-                    # Bật Server (Nếu chưa chạy)
-                    if not self.web_thread.isRunning():
-                        self.web_thread.start()
-                    else:
-                        # Nếu đang chạy, tái sử dụng URL cũ
-                        if self.web_thread.public_url:
-                            on_server_online(self.web_thread.public_url)
-
-                # Kết nối Worker
-                self.prep_worker.finished.connect(on_pdf_ready)
-                self.prep_worker.start()
 
     # --- THÊM HÀM NÀY VÀO CLASS MainApp ---
     def get_current_exam_questions(self):
@@ -8074,47 +7496,6 @@ class MainApp(QMainWindow):
 
         return questions, source
     
-    # --- THÊM HÀM NÀY VÀO CLASS MainApp ---
-    def on_student_submit(self, name, score):
-        """Hàm được gọi khi có học sinh nộp bài"""
-        # Hiển thị thông báo dưới thanh trạng thái
-        msg = f"📩 {name} vừa nộp bài! Điểm số: {score}"
-        self.statusBar().showMessage(msg, 5000)
-        
-        # (Tùy chọn) In ra console để theo dõi
-        print(f"DEBUG: {msg}")
-        
-        # Nếu muốn hiện thông báo nổi (System Tray) nếu có
-        if hasattr(self, 'tray_icon'):
-            self.tray_icon.showMessage("Kết quả thi", msg)
-
-    # [Thay thế hàm cũ trong class MainApp]
-    def create_web_tab(self, html_file):
-        """Tạo tab hiển thị giao diện HTML (Đã cấp quyền Internet)"""
-        view = QWebEngineView()
-        
-        # 1. Thiết lập cầu nối dữ liệu (Bridge)
-        view.page().setWebChannel(self.channel)
-        
-        # --- [THÊM ĐOẠN NÀY ĐỂ SỬA LỖI KHÔNG TẢI ĐƯỢC TAILWIND] ---
-        # Cấp quyền cho file nội bộ (HTML) truy cập Internet (CDN)
-        settings = view.settings()
-        settings.setAttribute(QWebEngineSettings.WebAttribute.LocalContentCanAccessRemoteUrls, True)
-        settings.setAttribute(QWebEngineSettings.WebAttribute.LocalContentCanAccessFileUrls, True)
-        settings.setAttribute(QWebEngineSettings.WebAttribute.JavascriptEnabled, True)
-        # ---------------------------------------------------------
-
-        # 2. Cấu hình đường dẫn file
-        base_dir = os.path.dirname(os.path.abspath(__file__))
-        html_path = os.path.join(base_dir, "ui", html_file)
-        
-        # Fallback nếu không thấy trong thư mục ui
-        if not os.path.exists(html_path):
-             html_path = os.path.join(base_dir, html_file)
-            
-        view.setUrl(QUrl.fromLocalFile(html_path))
-        
-        return view
 # =============================================================================
 # AI CLONER - ĐÃ TÁCH RA KHỎI MAINAPP
 # =============================================================================
