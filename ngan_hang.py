@@ -7699,35 +7699,51 @@ class MainApp(QMainWindow):
     def toggle_web_server(self):
         """Bật/Tắt Web Server - Fix lỗi tự chạy khi chưa bấm OK"""
         if self.btn_web.isChecked():
-            # 1. LẤY DỮ LIỆU TỪ TAB ĐANG MỞ
+            # TẠO MENU LỰA CHỌN NGUỒN ĐỀ
+            menu = QMenu(self)
+            menu.setStyleSheet("QMenu { font-size: 14px; padding: 5px; } QMenu::item { padding: 10px 20px; }")
+
+            act_sys = menu.addAction("1. Lấy đề từ hệ thống (Tab hiện tại)")
+            act_ext = menu.addAction("2. Lấy đề từ bên ngoài (File TeX)")
+
+            # Hiển thị menu ngay dưới nút bấm
+            action = menu.exec(self.btn_web.mapToGlobal(QPoint(0, self.btn_web.height())))
+
             questions = []
-            source_name = ""
-            current_idx = self.stack.currentIndex()
 
-            if current_idx == 1: # Thủ công
-                if hasattr(self.exam_lst, 'get_all_questions'):
-                    questions = self.exam_lst.get_all_questions()
-                source_name = "Soạn Thủ Công"
-            elif current_idx == 2: # Ma trận
-                if hasattr(self, 'current_exam') and self.current_exam:
-                    questions = self.current_exam
-                source_name = "Ma Trận"
-            elif current_idx == 3: # AI
-                if hasattr(self, 'gen_res') and self.gen_res:
-                    first_code = list(self.gen_res.keys())[0]
-                    raw_qs = self.gen_res[first_code]
-                    for q in raw_qs:
-                        questions.append({
-                            'content_tex': q['content'],
-                            'key': q.get('key', '?'),
-                            'dang': 1 if r'\choice' in q['content'] else (2 if r'\choiceTF' in q['content'] else 3)
-                        })
-                source_name = "AI Generator"
+            if action == act_sys:
+                # 1. LẤY DỮ LIỆU TỪ TAB ĐANG MỞ
+                questions, src = self.get_current_exam_questions()
+                if not questions:
+                    self.btn_web.setChecked(False)
+                    QMessageBox.warning(self, "Chưa có câu hỏi",
+                        f"Tab '{src}' chưa có dữ liệu.\nVui lòng tạo đề trước khi bật thi Online.")
+                    return
 
-            if not questions:
+            elif action == act_ext:
+                # 2. LẤY TỪ FILE BÊN NGOÀI
+                path, _ = QFileDialog.getOpenFileName(self, "Chọn file TeX đề thi", "", "TeX Files (*.tex)")
+                if path:
+                    # Parse file để lấy câu hỏi và đáp án
+                    try:
+                        parsed_qs, _ = self.bk.analyze_tex_file(path)
+                        if parsed_qs:
+                            questions = parsed_qs
+                            QMessageBox.information(self, "Đã đọc file", f"Đã tìm thấy {len(questions)} câu hỏi từ file.")
+                        else:
+                            self.btn_web.setChecked(False)
+                            QMessageBox.warning(self, "Lỗi", "Không tìm thấy câu hỏi nào trong file (cần có môi trường ex/bt)!")
+                            return
+                    except Exception as e:
+                        self.btn_web.setChecked(False)
+                        QMessageBox.critical(self, "Lỗi đọc file", str(e))
+                        return
+                else:
+                    self.btn_web.setChecked(False)
+                    return
+            else:
+                # Hủy bỏ (click ra ngoài)
                 self.btn_web.setChecked(False)
-                QMessageBox.warning(self, "Chưa có câu hỏi", 
-                    f"Tab '{source_name}' chưa có dữ liệu.\nVui lòng tạo đề trước khi bật thi Online.")
                 return
 
             # [FIX QUAN TRỌNG] CHỈ CHẠY TIẾP KHI NGƯỜI DÙNG BẤM OK
