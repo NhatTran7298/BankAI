@@ -920,11 +920,12 @@ class ExamPreparerWorker(QThread):
     progress = pyqtSignal(str) 
     finished = pyqtSignal(bool, dict)
 
-    def __init__(self, questions, title, duration=90):
+    def __init__(self, questions, title, duration=90, external_tex=None):
         super().__init__()
         self.questions = list(questions) 
         self.title = title
         self.duration = duration
+        self.external_tex = external_tex
 
     # (Hàm extract_latex_key bạn có thể xóa hoặc giữ nguyên, 
     # vì bây giờ ta tin tưởng key từ Dialog gửi sang hơn)
@@ -942,7 +943,7 @@ class ExamPreparerWorker(QThread):
             
             sanitized_qs.sort(key=lambda x: x['dang'])
 
-            # 2. Tạo nội dung
+            # 2. Tạo nội dung & Matrix Key
             full_content = [
                 r"\begin{center}\textbf{\Large " + self.title + r"}\end{center}",
                 r"\setcounter{ex}{0}"
@@ -987,8 +988,20 @@ class ExamPreparerWorker(QThread):
 
             # 3. Biên dịch PDF
             self.progress.emit("Đang biên dịch PDF...")
-            tex_body = "\n".join(full_content)
-            final_tex = LATEX_TEMPLATE.replace("__CONTENT__", tex_body)
+
+            final_tex = ""
+            if self.external_tex and os.path.exists(self.external_tex):
+                # Nếu có file TeX riêng, đọc nội dung file đó
+                try:
+                    with open(self.external_tex, 'r', encoding='utf-8') as f:
+                        final_tex = f.read()
+                except Exception as e:
+                    self.finished.emit(False, {"error": f"Lỗi đọc file TeX: {e}"})
+                    return
+            else:
+                # Nếu không, dùng nội dung tự sinh từ DB
+                tex_body = "\n".join(full_content)
+                final_tex = LATEX_TEMPLATE.replace("__CONTENT__", tex_body)
             
             import time
             pdf_name = f"online_exam_{int(time.time())}"
@@ -4559,6 +4572,15 @@ class WebServerThread(QThread):
         self.exam_dir = os.path.join(os.path.expanduser("~"), ".bankai_exams")
         if not os.path.exists(self.exam_dir): os.makedirs(self.exam_dir)
 
+    def set_exam_data(self, data):
+        """Lưu dữ liệu đề thi hiện tại vào thread để server sử dụng"""
+        self.exam_data = data
+        self.exam_id = data.get('examId', 'default')
+        # Lưu file để persist
+        if 'examId' in data:
+            self.save_exam_file(self.exam_id, data)
+        print(f"✅ Server loaded exam data: {self.exam_id}")
+
     def save_exam_file(self, exam_id, data):
         """Lưu đề thi thành file riêng biệt"""
         filepath = os.path.join(self.exam_dir, f"{exam_id}.json")
@@ -5505,6 +5527,7 @@ class ExamConfigDialog(QDialog):
         self.resize(1100, 650)
         self.questions = questions 
         self.final_questions = []
+        self.tex_path = ""
         
         layout = QVBoxLayout(self)
 
@@ -5516,6 +5539,18 @@ class ExamConfigDialog(QDialog):
         gl.addWidget(QLabel("Thời gian (phút):"), 0, 2)
         self.inp_time = QSpinBox(); self.inp_time.setRange(5, 300); self.inp_time.setValue(90)
         gl.addWidget(self.inp_time, 0, 3)
+
+        # [NEW] Chọn file TeX
+        gl.addWidget(QLabel("File TeX riêng (nếu có):"), 1, 0)
+        self.txt_tex_path = QLineEdit()
+        self.txt_tex_path.setPlaceholderText("Chọn file .tex để biên dịch PDF thay vì tạo tự động...")
+        self.txt_tex_path.setReadOnly(True)
+        gl.addWidget(self.txt_tex_path, 1, 1, 1, 2)
+
+        btn_browse = QPushButton("Chọn File")
+        btn_browse.clicked.connect(self.browse_tex)
+        gl.addWidget(btn_browse, 1, 3)
+
         layout.addWidget(grp_info)
 
         # --- PHẦN 2: BẢNG SOÁT ---
@@ -5680,11 +5715,18 @@ class ExamConfigDialog(QDialog):
             
         self.accept()
 
+    def browse_tex(self):
+        f, _ = QFileDialog.getOpenFileName(self, "Chọn file TeX", "", "TeX Files (*.tex)")
+        if f:
+            self.tex_path = f
+            self.txt_tex_path.setText(f)
+
     def get_config(self):
         return {
             "title": self.inp_title.text(),
             "time": self.inp_time.value(),
-            "questions": self.final_questions
+            "questions": self.final_questions,
+            "external_tex": self.tex_path
         }
 
 class ExamMonitorDialog(QDialog):
@@ -7696,6 +7738,7 @@ class MainApp(QMainWindow):
                 final_qs = config['questions']
                 title = config['title']
                 duration = config['time']
+                ext_tex = config.get('external_tex')
 
                 # KHỞI ĐỘNG SERVER (NẾU CHƯA)
                 if not hasattr(self, 'web_thread'):
@@ -7710,7 +7753,7 @@ class MainApp(QMainWindow):
                 self.pd_prep.setWindowModality(Qt.WindowModality.WindowModal)
                 self.pd_prep.show()
 
-                self.prep_worker = ExamPreparerWorker(final_qs, title, duration)
+                self.prep_worker = ExamPreparerWorker(final_qs, title, duration, ext_tex)
                 self.prep_worker.progress.connect(lambda s: self.pd_prep.setLabelText(s))
                 self.prep_worker.finished.connect(self.on_exam_prepared)
                 self.prep_worker.start()
