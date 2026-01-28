@@ -305,11 +305,13 @@ from PyQt6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout,
                              QSpinBox, QTabWidget, QHeaderView, QProgressDialog, 
                              QTreeWidget, QTreeWidgetItem, QSplitter, QLineEdit,
                              QTableWidgetItem, QScrollArea, QFrame, QGridLayout,
-                             QGroupBox, QSplashScreen) # <--- Thêm QSplashScreen
+                             QGroupBox, QSplashScreen, QStackedWidget,
+                             QGraphicsDropShadowEffect, QAbstractItemView, QSizePolicy, QMenu)
 
 # Tìm dòng from PyQt6.QtGui import ... và thêm QPixmap, QPainter vào
-from PyQt6.QtGui import QDrag, QFont, QIcon, QColor, QAction, QBrush, QPixmap, QPainter, QPen, QCursor
-from PyQt6.QtCore import Qt, QThread, pyqtSignal, QMimeData, QPoint, QSize
+from PyQt6.QtGui import (QDrag, QFont, QIcon, QColor, QAction, QBrush, QPixmap,
+                         QPainter, QPen, QCursor, QDesktopServices, QLinearGradient, QGradient)
+from PyQt6.QtCore import Qt, QThread, pyqtSignal, QMimeData, QPoint, QSize, QUrl, QPropertyAnimation, QEasingCurve, QRect
 # =============================================================================
 # QUẢN LÝ API KEY CÁ NHÂN
 # =============================================================================
@@ -336,152 +338,137 @@ def save_api_key(key):
         json.dump({"gemini_api_key": key.strip()}, f, indent=2)
 
 # =============================================================================
-# 0. STYLE SHEET (GIAO DIỆN HIỆN ĐẠI)
+# 0. STYLE SHEET (APPLE GLASSMORPHISM)
 # =============================================================================
 APP_STYLE = """
-/* Tổng thể ứng dụng */
+/* === MAIN WINDOW & GLOBAL === */
 QMainWindow {
-    background-color: #f4f6f9;
+    background-color: #f5f6fa; /* Soft Gray Blue Background */
 }
 QWidget {
-    font-family: 'Segoe UI', Arial, sans-serif;
+    font-family: 'Segoe UI Variable', 'Segoe UI', '.AppleSystemUIFont', sans-serif;
     font-size: 14px;
-    color: #2c3e50;
+    color: #2d3436;
 }
 
-/* Tab Widget */
-QTabWidget::pane {
-    border: 1px solid #dcdde1;
-    background: white;
-    border-radius: 6px;
-    top: -1px; 
-}
-QTabBar::tab {
-    background: #ecf0f1;
-    border: 1px solid #dcdde1;
-    padding: 10px 20px;
-    margin-right: 4px;
-    border-top-left-radius: 6px;
-    border-top-right-radius: 6px;
-    font-weight: bold;
-    color: #7f8c8d;
-}
-QTabBar::tab:selected {
-    background: white;
-    border-bottom-color: white;
-    color: #2980b9;
-}
-
-/* Các nút bấm (Buttons) */
-QPushButton {
-    background-color: #ffffff;
-    border: 1px solid #bdc3c7;
-    border-radius: 6px;
-    padding: 8px 16px;
-    font-weight: 600;
-    color: #2c3e50;
-}
-QPushButton:hover {
-    background-color: #ecf0f1;
-    border-color: #95a5a6;
-}
-QPushButton:pressed {
-    background-color: #bdc3c7;
-}
-
-/* Nút chính (Primary - Blue) */
-QPushButton[class="btn-primary"] {
-    background-color: #3498db;
-    color: white;
-    border: none;
-}
-QPushButton[class="btn-primary"]:hover {
-    background-color: #2980b9;
-}
-
-/* Nút thành công (Success - Green) */
-QPushButton[class="btn-success"] {
-    background-color: #2ecc71;
-    color: white;
-    border: none;
-}
-QPushButton[class="btn-success"]:hover {
-    background-color: #27ae60;
-}
-
-/* Nút cảnh báo/xóa (Danger - Red) */
-QPushButton[class="btn-danger"] {
-    background-color: #e74c3c;
-    color: white;
-    border: none;
-}
-QPushButton[class="btn-danger"]:hover {
-    background-color: #c0392b;
-}
-
-/* Nút cam (Warning) */
-QPushButton[class="btn-warning"] {
-    background-color: #f39c12;
-    color: white;
-    border: none;
-}
-QPushButton[class="btn-warning"]:hover {
-    background-color: #d35400;
-}
-
-/* Input Fields & Combo Boxes */
-QLineEdit, QComboBox, QSpinBox {
-    padding: 6px;
-    border: 1px solid #bdc3c7;
-    border-radius: 4px;
-    background-color: white;
-    selection-background-color: #3498db;
-}
-QLineEdit:focus, QComboBox:focus, QSpinBox:focus {
-    border: 1px solid #3498db;
-}
-
-/* Tables & Lists */
-QTableWidget, QListWidget, QTreeWidget {
-    background-color: white;
-    border: 1px solid #dcdde1;
-    border-radius: 6px;
-    gridline-color: #ecf0f1;
-    selection-background-color: #3498db;
+/* === GLASS PANELS & CARDS === */
+QFrame, QGroupBox, QTableWidget, QListWidget, QTreeWidget, QTextEdit {
+    background-color: rgba(255, 255, 255, 0.75); /* Semi-transparent */
+    border: 1px solid rgba(255, 255, 255, 0.9);
+    border-radius: 12px;
+    selection-background-color: #0984e3; /* Modern Blue */
     selection-color: white;
 }
-QHeaderView::section {
-    background-color: #ecf0f1;
-    padding: 8px;
+
+/* === SIDEBAR (Navigation) === */
+QWidget#Sidebar {
+    background-color: rgba(255, 255, 255, 0.85);
+    border-right: 1px solid rgba(200, 200, 200, 0.4);
+}
+QPushButton#NavBtn {
+    text-align: left;
+    padding: 12px 20px;
     border: none;
-    font-weight: bold;
-    color: #2c3e50;
-    border-bottom: 2px solid #bdc3c7;
-    border-right: 1px solid #bdc3c7;
+    background-color: transparent;
+    border-radius: 10px;
+    font-weight: 600;
+    color: #636e72;
+    margin: 4px 10px;
+}
+QPushButton#NavBtn:hover {
+    background-color: rgba(9, 132, 227, 0.1); /* Light Blue Hover */
+    color: #0984e3;
+}
+QPushButton#NavBtn:checked {
+    background-color: #0984e3;
+    color: white;
 }
 
-/* Group Box */
-QGroupBox {
+/* === BUTTONS (Action) === */
+QPushButton {
+    background-color: white;
+    border: 1px solid #dfe6e9;
+    border-radius: 10px;
+    padding: 8px 16px;
+    font-weight: 600;
+    color: #2d3436;
+}
+QPushButton:hover {
+    background-color: #f1f2f6;
+    border-color: #b2bec3;
+}
+QPushButton:pressed {
+    background-color: #dfe6e9;
+}
+
+/* Special Buttons */
+QPushButton[class="btn-primary"] {
+    background-color: #0984e3;
+    color: white;
+    border: none;
+}
+QPushButton[class="btn-primary"]:hover { background-color: #74b9ff; }
+
+QPushButton[class="btn-success"] {
+    background-color: #00b894;
+    color: white;
+    border: none;
+}
+QPushButton[class="btn-success"]:hover { background-color: #55efc4; }
+
+QPushButton[class="btn-danger"] {
+    background-color: #d63031;
+    color: white;
+    border: none;
+}
+QPushButton[class="btn-danger"]:hover { background-color: #ff7675; }
+
+/* === INPUT FIELDS === */
+QLineEdit, QComboBox, QSpinBox, QTimeEdit {
+    background-color: rgba(255, 255, 255, 0.9);
+    border: 1px solid #dfe6e9;
+    border-radius: 8px;
+    padding: 8px;
+    min-height: 20px;
+}
+QLineEdit:focus, QComboBox:focus, QSpinBox:focus {
+    border: 2px solid #74b9ff;
+    background-color: white;
+}
+
+/* === TABLES & LISTS === */
+QHeaderView::section {
+    background-color: rgba(245, 245, 245, 0.9);
+    padding: 10px;
+    border: none;
+    border-bottom: 1px solid #dcdde1;
     font-weight: bold;
-    border: 1px solid #bdc3c7;
-    border-radius: 6px;
-    margin-top: 12px;
-    padding-top: 15px;
-    background-color: #ffffff;
+    color: #636e72;
+    text-transform: uppercase;
+    font-size: 12px;
+}
+QTableWidget::item { padding: 5px; }
+QScrollBar:vertical {
+    background: transparent;
+    width: 8px;
+    margin: 0;
+}
+QScrollBar::handle:vertical {
+    background: #b2bec3;
+    min-height: 20px;
+    border-radius: 4px;
+}
+
+/* === GROUP BOX === */
+QGroupBox {
+    margin-top: 24px;
+    font-weight: bold;
+    color: #0984e3;
 }
 QGroupBox::title {
     subcontrol-origin: margin;
-    subcontrol-position: top left;
-    padding: 0 5px;
     left: 10px;
-    color: #2980b9;
-}
-
-/* Text Edit */
-QTextEdit {
-    border: 1px solid #bdc3c7;
-    border-radius: 6px;
-    background-color: #fdfdfd;
+    padding: 0 5px;
 }
 """
 
@@ -1228,6 +1215,16 @@ class PDFCompiler:
             )
             
             if os.path.exists(pdf_path):
+                # [MỚI] Ghi log lịch sử ngay khi tạo xong
+                try:
+                    conn = sqlite3.connect(DB_PATH)
+                    conn.execute("INSERT INTO exam_history (title, file_path, exam_type) VALUES (?, ?, ?)",
+                                (output_name, pdf_path, "PDF"))
+                    conn.commit()
+                    conn.close()
+                except Exception as ex:
+                    print(f"History Log Error: {ex}")
+
                 return "Thành công", pdf_path
             else:
                 # [DEBUG] In 50 dòng cuối của log lỗi ra màn hình để bạn biết sửa chỗ nào
@@ -1534,8 +1531,8 @@ class Backend:
     def _init_db(self):
         self.conn.execute("CREATE TABLE IF NOT EXISTS questions (id INTEGER PRIMARY KEY AUTOINCREMENT, grade INTEGER, subject TEXT, chapter INTEGER, level TEXT, content_tex TEXT, raw_data TEXT, dang INTEGER DEFAULT 4, id6 TEXT, bai INTEGER, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)")
         self.conn.commit()
-        self._migrate_db()
-        # [MỚI] Bảng lưu kết quả thi
+
+        # [MỚI] Bảng lưu kết quả thi Online
         self.conn.execute("""
             CREATE TABLE IF NOT EXISTS exam_results (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -1544,6 +1541,17 @@ class Backend:
                 score REAL,
                 detail TEXT, -- Lưu JSON chi tiết đúng sai
                 submitted_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+
+        # [MỚI] Bảng lịch sử tạo đề (Exam History)
+        self.conn.execute("""
+            CREATE TABLE IF NOT EXISTS exam_history (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                title TEXT,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                file_path TEXT,
+                exam_type TEXT -- 'PDF', 'Online', 'Mixed'
             )
         """)
         self.conn.commit()
@@ -1558,6 +1566,18 @@ class Backend:
             if 'bai' not in cols: self.conn.execute("ALTER TABLE questions ADD COLUMN bai INTEGER")
             self.conn.commit()
         except: pass
+
+    def log_history(self, title, path, exam_type="PDF"):
+        """Ghi log lịch sử tạo đề"""
+        try:
+            self.conn.execute("INSERT INTO exam_history (title, file_path, exam_type) VALUES (?, ?, ?)", (title, path, exam_type))
+            self.conn.commit()
+        except Exception as e:
+            print(f"Log History Error: {e}")
+
+    def get_history(self):
+        """Lấy danh sách lịch sử tạo đề"""
+        return self.conn.execute("SELECT * FROM exam_history ORDER BY id DESC LIMIT 50").fetchall()
 
 # Tìm và thay thế hàm import_tex cũ bằng đoạn này
     # Tìm trong class Backend và thay thế hàm analyze_tex_file cũ
@@ -2934,7 +2954,297 @@ class ImageMappingDialog(QDialog):
         super().accept()
 
 # =============================================================================
-# 7. MAIN APP
+# 7. NEW UI COMPONENTS (MODERN SIDEBAR & PAGES)
+# =============================================================================
+class ModernSidebar(QWidget):
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setObjectName("Sidebar")
+        self.setFixedWidth(240)
+
+        # Shadow Effect
+        shadow = QGraphicsDropShadowEffect(self)
+        shadow.setBlurRadius(20); shadow.setXOffset(5); shadow.setYOffset(0)
+        shadow.setColor(QColor(0, 0, 0, 50))
+        self.setGraphicsEffect(shadow)
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(15, 30, 15, 30)
+        layout.setSpacing(15)
+
+        # Logo Area
+        logo_box = QHBoxLayout()
+        lbl_icon = QLabel("🏛️")
+        lbl_icon.setStyleSheet("font-size: 28px; background: transparent; border: none;")
+        lbl_title = QLabel("BANKAI PRO")
+        lbl_title.setStyleSheet("font-size: 20px; font-weight: 900; color: #0984e3; background: transparent; border: none;")
+        logo_box.addWidget(lbl_icon); logo_box.addWidget(lbl_title); logo_box.addStretch()
+        layout.addLayout(logo_box)
+
+        layout.addSpacing(30)
+
+        # Navigation Buttons
+        self.btn_group = QButtonGroup(self)
+        self.btn_group.setExclusive(True)
+
+        self.buttons = []
+        nav_items = [
+            ("DASHBOARD", "📊", 0),
+            ("SOẠN BÀI (MANUAL)", "✏️", 1),
+            ("MA TRẬN ĐỀ (MIX)", "🎲", 2),
+            ("AI GENERATOR", "🤖", 3),
+            ("LỊCH SỬ & QUẢN LÝ", "clock", 4) # Icon clock placeholder
+        ]
+
+        for text, icon, idx in nav_items:
+            # Fix icon clock if needed, using unicode or just text
+            if icon == "clock": icon = "🕒"
+
+            btn = QPushButton(f"  {icon}   {text}")
+            btn.setObjectName("NavBtn")
+            btn.setCheckable(True)
+            btn.setCursor(Qt.CursorShape.PointingHandCursor)
+            layout.addWidget(btn)
+            self.btn_group.addButton(btn, idx)
+            self.buttons.append(btn)
+
+        # Default check first
+        if self.buttons: self.buttons[0].setChecked(True)
+
+        layout.addStretch()
+
+        # Footer
+        lbl_ver = QLabel(f"Version {APP_VERSION}\n2025 Edition")
+        lbl_ver.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        lbl_ver.setStyleSheet("color: #b2bec3; font-size: 12px; background: transparent; border: none;")
+        layout.addWidget(lbl_ver)
+
+class DashboardPage(QWidget):
+    def __init__(self, backend, parent=None):
+        super().__init__(parent)
+        self.bk = backend
+        self.setup_ui()
+
+    def setup_ui(self):
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(40, 40, 40, 40)
+        layout.setSpacing(30)
+
+        # Welcome Header
+        lbl_welcome = QLabel("Trung tâm điều khiển")
+        lbl_welcome.setStyleSheet("font-size: 32px; font-weight: 800; color: #2d3436; background: transparent; margin-bottom: 10px;")
+        layout.addWidget(lbl_welcome)
+
+        # KPI Cards Row
+        kpi_layout = QHBoxLayout()
+        kpi_layout.setSpacing(25)
+
+        self.card_qs = self.create_kpi_card("TỔNG CÂU HỎI", "Wait...", "📥", "#0984e3")
+        self.card_exams = self.create_kpi_card("ĐỀ ĐÃ TẠO", "Wait...", "📝", "#00b894")
+        self.card_subs = self.create_kpi_card("KẾT QUẢ THI", "Wait...", "🏆", "#6c5ce7")
+
+        kpi_layout.addWidget(self.card_qs)
+        kpi_layout.addWidget(self.card_exams)
+        kpi_layout.addWidget(self.card_subs)
+        layout.addLayout(kpi_layout)
+
+        # Content Area (Stats & Quick Actions)
+        content_layout = QHBoxLayout()
+        content_layout.setSpacing(25)
+
+        # Stats Chart
+        stats_grp = QGroupBox("THỐNG KÊ MỨC ĐỘ CÂU HỎI")
+        stats_l = QVBoxLayout(stats_grp)
+        stats_l.setSpacing(15)
+
+        self.bar_nb = self.create_progress_bar("Nhận biết", "#00b894")
+        self.bar_th = self.create_progress_bar("Thông hiểu", "#0984e3")
+        self.bar_vd = self.create_progress_bar("Vận dụng", "#e17055")
+        self.bar_vdc = self.create_progress_bar("Vận dụng cao", "#d63031")
+
+        stats_l.addWidget(self.bar_nb[0]); stats_l.addWidget(self.bar_nb[1])
+        stats_l.addWidget(self.bar_th[0]); stats_l.addWidget(self.bar_th[1])
+        stats_l.addWidget(self.bar_vd[0]); stats_l.addWidget(self.bar_vd[1])
+        stats_l.addWidget(self.bar_vdc[0]); stats_l.addWidget(self.bar_vdc[1])
+        stats_l.addStretch()
+
+        content_layout.addWidget(stats_grp, 6)
+
+        # Quick Actions
+        action_grp = QGroupBox("PHÍM TẮT")
+        act_l = QVBoxLayout(action_grp)
+        act_l.setSpacing(15)
+
+        btn_import = QPushButton("📥  Nhập dữ liệu mới")
+        btn_import.setFixedHeight(50)
+        btn_import.clicked.connect(self.req_import)
+
+        btn_matrix = QPushButton("🎲  Tạo ma trận đề")
+        btn_matrix.setFixedHeight(50)
+        btn_matrix.clicked.connect(self.req_matrix)
+
+        act_l.addWidget(btn_import)
+        act_l.addWidget(btn_matrix)
+        act_l.addStretch()
+
+        content_layout.addWidget(action_grp, 4)
+        layout.addLayout(content_layout)
+
+        layout.addStretch()
+
+    def create_kpi_card(self, title, value, icon, color):
+        card = QFrame()
+        card.setStyleSheet(f"""
+            QFrame {{
+                background-color: white;
+                border-left: 6px solid {color};
+                border-radius: 12px;
+            }}
+        """)
+        # Add shadow
+        shadow = QGraphicsDropShadowEffect(card)
+        shadow.setBlurRadius(15); shadow.setOffset(0, 4); shadow.setColor(QColor(0,0,0,30))
+        card.setGraphicsEffect(shadow)
+
+        l = QVBoxLayout(card)
+        l.setContentsMargins(20, 20, 20, 20)
+
+        top = QHBoxLayout()
+        lbl_icon = QLabel(icon)
+        lbl_icon.setStyleSheet(f"font-size: 30px; background: transparent; border: none;")
+        lbl_title = QLabel(title)
+        lbl_title.setStyleSheet("color: #636e72; font-size: 13px; font-weight: bold; border: none; background: transparent; text-transform: uppercase;")
+
+        top.addWidget(lbl_icon); top.addStretch(); top.addWidget(lbl_title)
+        l.addLayout(top)
+
+        lbl_val = QLabel(value)
+        lbl_val.setStyleSheet(f"color: {color}; font-size: 36px; font-weight: 800; border: none; background: transparent;")
+        lbl_val.setAlignment(Qt.AlignmentFlag.AlignRight)
+        l.addWidget(lbl_val)
+
+        return card
+
+    def create_progress_bar(self, label, color):
+        lbl = QLabel(label)
+        lbl.setStyleSheet("font-weight: 600; color: #2d3436; border: none; background: transparent;")
+        bar = QProgressBar()
+        bar.setFixedHeight(10)
+        bar.setTextVisible(False)
+        bar.setStyleSheet(f"""
+            QProgressBar {{
+                background-color: #dfe6e9;
+                border-radius: 5px;
+                border: none;
+            }}
+            QProgressBar::chunk {{
+                background-color: {color};
+                border-radius: 5px;
+            }}
+        """)
+        return lbl, bar
+
+    def refresh_data(self):
+        try:
+            total, levels, _ = self.bk.get_dashboard_stats()
+
+            # Update values
+            self.find_val_label(self.card_qs).setText(f"{total:,}")
+
+            hist = self.bk.get_history()
+            self.find_val_label(self.card_exams).setText(f"{len(hist)}")
+
+            # Mockup result count (using DB query ideally)
+            res_count = self.bk.conn.execute("SELECT COUNT(*) FROM exam_results").fetchone()[0]
+            self.find_val_label(self.card_subs).setText(f"{res_count:,}")
+
+            # Update Bars
+            self.bar_nb[1].setMaximum(total); self.bar_nb[1].setValue(levels.get('N', 0))
+            self.bar_th[1].setMaximum(total); self.bar_th[1].setValue(levels.get('H', 0))
+            self.bar_vd[1].setMaximum(total); self.bar_vd[1].setValue(levels.get('V', 0))
+            self.bar_vdc[1].setMaximum(total); self.bar_vdc[1].setValue(levels.get('C', 0))
+
+        except Exception as e:
+            print(f"Stats Error: {e}")
+
+    def find_val_label(self, card):
+        # Helper to find the value label in card (2nd label)
+        return card.findChildren(QLabel)[-1]
+
+    # Signal Placeholders (Connect in MainApp)
+    def req_import(self): pass
+    def req_matrix(self): pass
+
+class HistoryPage(QWidget):
+    def __init__(self, backend, parent=None):
+        super().__init__(parent)
+        self.bk = backend
+        self.setup_ui()
+
+    def setup_ui(self):
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(30, 30, 30, 30)
+        layout.setSpacing(20)
+
+        lbl = QLabel("📜 LỊCH SỬ TẠO ĐỀ & THI")
+        lbl.setStyleSheet("font-size: 24px; font-weight: bold; color: #2d3436; background: transparent; margin-bottom: 10px;")
+        layout.addWidget(lbl)
+
+        self.table = QTableWidget()
+        self.table.setColumnCount(5)
+        self.table.setHorizontalHeaderLabels(["ID", "Tên Đề / Bài Thi", "Thời gian tạo", "Loại", "Thao tác"])
+        self.table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
+        self.table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
+        self.table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
+        self.table.setAlternatingRowColors(True)
+        self.table.setShowGrid(False)
+        self.table.itemDoubleClicked.connect(self.open_file)
+
+        layout.addWidget(self.table)
+
+        btn = QPushButton("🔄 Làm mới danh sách")
+        btn.setFixedWidth(200)
+        btn.clicked.connect(self.load_data)
+        layout.addWidget(btn)
+
+        self.load_data()
+
+    def load_data(self):
+        rows = self.bk.get_history()
+        self.table.setRowCount(0)
+        for r in rows:
+            row = self.table.rowCount()
+            self.table.insertRow(row)
+
+            # r: (id, title, created_at, file_path, type)
+            self.table.setItem(row, 0, QTableWidgetItem(str(r[0])))
+            self.table.setItem(row, 1, QTableWidgetItem(r[1]))
+            self.table.setItem(row, 2, QTableWidgetItem(str(r[2])))
+            self.table.setItem(row, 3, QTableWidgetItem(r[4] if len(r)>4 else "PDF"))
+
+            # Action Button
+            btn_open = QPushButton("📂 Mở")
+            btn_open.setCursor(Qt.CursorShape.PointingHandCursor)
+            btn_open.setStyleSheet("background-color: #0984e3; color: white; border-radius: 4px; padding: 4px;")
+            btn_open.clicked.connect(lambda _, x=row: self.open_file_by_btn(x))
+            self.table.setCellWidget(row, 4, btn_open)
+
+            # Store path in hidden data
+            self.table.item(row, 0).setData(Qt.ItemDataRole.UserRole, r[3])
+
+    def open_file(self, item):
+        row = item.row()
+        self.open_file_by_btn(row)
+
+    def open_file_by_btn(self, row):
+        path = self.table.item(row, 0).data(Qt.ItemDataRole.UserRole)
+        if path and os.path.exists(path):
+            QDesktopServices.openUrl(QUrl.fromLocalFile(path))
+        else:
+            QMessageBox.warning(self, "Lỗi", f"Không tìm thấy file:\n{path}\nCó thể file đã bị xóa hoặc di chuyển.")
+
+# =============================================================================
+# MAIN APP (REFACTORED)
 # =============================================================================
 
 # =============================================================================
@@ -6322,295 +6632,68 @@ class MatrixEditorDialog(QDialog):
         self.accept()
 
 class MainApp(QMainWindow):
-    def apply_theme(self):
-        """
-        Giao diện BRAND LUXURY (Orange Glass Edition)
-        Nền: #602C04 (Nâu) | Các khối: #ED840D (80% opacity)
-        """
-        theme_style = """
-        /* --- TỔNG THỂ --- */
-        QMainWindow, QDialog {
-            background-color: #602C04; /* Nền Nâu Coffee Đậm */
-            color: #ffffff;
-        }
-        QWidget {
-            /* [FIX] Ưu tiên font hệ thống để tránh warning */
-            font-family: -apple-system, Helvetica, Arial, sans-serif;
-            font-size: 14px;
-            color: #ffffff;
-        }
-
-        /* --- TAB WIDGET --- */
-        QTabWidget::pane {
-            border: 1px solid #954C04;
-            background: #602C04;
-            border-radius: 8px;
-        }
-        QTabBar::tab {
-            background: rgba(237, 132, 13, 0.3); /* Cam nhạt */
-            color: #eee;
-            padding: 10px 20px;
-            margin-right: 4px;
-            border-top-left-radius: 6px;
-            border-top-right-radius: 6px;
-            font-weight: bold;
-        }
-        QTabBar::tab:selected {
-            background: #ED840D; /* Cam 100% */
-            color: white;
-            border-bottom: 2px solid #ffffff;
-        }
-
-        /* --- GLASS CARD & GROUP BOX (NỀN CAM 80%) --- */
-        QFrame[class="glass-panel"], QGroupBox {
-            background-color: rgba(237, 132, 13, 0.8); /* [YÊU CẦU] Cam 80% */
-            border: 1px solid #ffffff; /* Viền trắng cho nổi bật trên nền cam */
-            border-radius: 12px;
-        }
-        QGroupBox {
-            margin-top: 25px;
-            font-weight: 700;
-            color: #ffffff; /* Tiêu đề trắng */
-            padding-top: 20px;
-        }
-        QGroupBox::title {
-            subcontrol-origin: margin;
-            left: 15px;
-            padding: 0 5px;
-        }
-
-        /* --- INPUT FIELDS (NỀN CAM 80%) --- */
-        QLineEdit, QTextEdit, QPlainTextEdit, QSpinBox, QTimeEdit, QComboBox {
-            background-color: rgba(237, 132, 13, 0.8); /* [YÊU CẦU] Cam 80% */
-            border: 1px solid rgba(255, 255, 255, 0.5);
-            border-radius: 8px;
-            color: #ffffff;
-            padding: 8px 12px;
-            font-weight: 500;
-        }
-        QLineEdit:focus, QTextEdit:focus, QComboBox:focus {
-            border: 2px solid #ffffff; 
-            background-color: #ED840D; /* Cam 100% khi focus */
-        }
-        
-        QComboBox::drop-down { border: none; }
-        QComboBox QAbstractItemView {
-            background-color: #ED840D;
-            color: white;
-            selection-background-color: #602C04;
-        }
-
-        /* --- NÚT BẤM (NỀN CAM 80%) --- */
-        QPushButton {
-            background-color: rgba(237, 132, 13, 0.8); /* [YÊU CẦU] Cam 80% */
-            border: 1px solid rgba(255, 255, 255, 0.3);
-            border-radius: 8px;
-            color: #ffffff;
-            padding: 10px 20px;
-            font-weight: 600;
-        }
-        QPushButton:hover {
-            background-color: #ff9f43; /* Sáng hơn khi hover */
-            border-color: #ffffff;
-        }
-        QPushButton:pressed {
-            background-color: #ae5c04;
-        }
-
-        /* Các nút đặc biệt (Primary/Success) giữ nguyên hoặc điều chỉnh nhẹ */
-        QPushButton[class="btn-primary"] {
-            background-color: #ffffff;
-            color: #ED840D; /* Đảo ngược: Nền trắng chữ cam để nổi bật */
-            border: none;
-        }
-        QPushButton[class="btn-success"] {
-            background-color: #2ecc71;
-            border: none;
-        }
-
-        /* --- BẢNG DỮ LIỆU (NỀN CAM 80%) --- */
-        QTableWidget, QListWidget, QTreeWidget {
-            background-color: rgba(237, 132, 13, 0.8); /* [YÊU CẦU] Cam 80% */
-            border: 1px solid rgba(255, 255, 255, 0.3);
-            border-radius: 8px;
-            gridline-color: rgba(255, 255, 255, 0.2);
-            color: #ffffff;
-            alternate-background-color: rgba(237, 132, 13, 0.6);
-        }
-        QHeaderView::section {
-            background-color: #ae5c04; /* Nâu cam đậm */
-            border: none;
-            border-bottom: 2px solid #ffffff;
-            color: #ffffff;
-            padding: 8px;
-            font-weight: bold;
-        }
-        QTableWidget::item:selected {
-            background-color: #ffffff;
-            color: #ED840D; /* Chọn màu trắng chữ cam */
-        }
-        
-        /* SCROLLBAR */
-        QScrollBar:vertical {
-            background: transparent;
-            width: 10px;
-        }
-        QScrollBar::handle:vertical {
-            background: rgba(255,255,255,0.5);
-            border-radius: 5px;
-        }
-        
-        /* MENU */
-        QMenu {
-            background-color: #ED840D;
-            color: white;
-            border: 1px solid white;
-        }
-        QMenu::item:selected {
-            background-color: #602C04;
-        }
-        """
-        self.setStyleSheet(theme_style)
-
-    def create_big_card(self, title, desc, icon, callback):
-        """Tạo thẻ chức năng lớn - Đã Fix lỗi & Đổi màu Cam"""
-        btn = QPushButton()
-        btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        btn.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
-        btn.setMinimumHeight(180)
-        
-        layout = QVBoxLayout(btn)
-        layout.setContentsMargins(20, 20, 20, 20)
-        layout.setSpacing(10)
-        
-        lbl_icon = QLabel(icon)
-        lbl_icon.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        lbl_icon.setStyleSheet("font-size: 48px; background: transparent; border: none; color: white;")
-        
-        lbl_title = QLabel(title)
-        lbl_title.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        # Chữ tiêu đề màu Trắng (trên nền cam đậm)
-        lbl_title.setStyleSheet("font-size: 20px; font-weight: 900; color: #ffffff; background: transparent; border: none; text-transform: uppercase;")
-        
-        lbl_desc = QLabel(desc)
-        lbl_desc.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        lbl_desc.setWordWrap(True)
-        lbl_desc.setStyleSheet("font-size: 13px; color: #f0f0f0; background: transparent; border: none;")
-        
-        layout.addWidget(lbl_icon)
-        layout.addWidget(lbl_title)
-        layout.addWidget(lbl_desc)
-        
-        btn.clicked.connect(callback)
-        
-        # [FIX] Xóa dòng transform, Đổi background sang Cam 80%
-        btn.setStyleSheet("""
-            QPushButton {
-                background-color: rgba(237, 132, 13, 0.8); /* [YÊU CẦU] Cam 80% */
-                border: 1px solid rgba(255, 255, 255, 0.4);
-                border-radius: 16px;
-                text-align: center;
-            }
-            QPushButton:hover {
-                background-color: #ED840D; /* Hover: Cam 100% */
-                border: 2px solid #ffffff;
-            }
-            QPushButton:pressed {
-                background-color: #ae5c04;
-            }
-        """)
-        
-        return btn
-    
-    def create_dashboard_card(self, title, desc, icon, btn_text, callback, color="#ED840D"):
-        """Hàm hỗ trợ tạo thẻ Dashboard theo phong cách Brand Luxury"""
-        card = QFrame()
-        card.setStyleSheet(f"""
-            QFrame {{
-                background-color: rgba(0, 0, 0, 0.25);
-                border: 1px solid #954C04;
-                border-radius: 12px;
-            }}
-            QFrame:hover {{
-                border: 1px solid {color};
-                background-color: rgba(0, 0, 0, 0.35);
-            }}
-        """)
-        
-        layout = QVBoxLayout(card)
-        layout.setContentsMargins(20, 25, 20, 25)
-        layout.setSpacing(10)
-        
-        # Icon & Header
-        h_layout = QHBoxLayout()
-        lbl_icon = QLabel(icon)
-        lbl_icon.setStyleSheet(f"font-size: 32px; background: transparent; border: none;")
-        
-        lbl_title = QLabel(title)
-        lbl_title.setStyleSheet(f"font-size: 18px; font-weight: bold; color: {color}; background: transparent; border: none;")
-        
-        h_layout.addWidget(lbl_icon)
-        h_layout.addWidget(lbl_title)
-        h_layout.addStretch()
-        layout.addLayout(h_layout)
-        
-        # Description
-        lbl_desc = QLabel(desc)
-        lbl_desc.setWordWrap(True)
-        lbl_desc.setStyleSheet("color: #dcdde1; font-size: 13px; background: transparent; border: none; margin-bottom: 10px;")
-        layout.addWidget(lbl_desc)
-        
-        # Action Button
-        btn = QPushButton(btn_text)
-        btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        btn.clicked.connect(callback)
-        btn.setStyleSheet(f"""
-            QPushButton {{
-                background-color: {color};
-                color: white;
-                font-weight: bold;
-                border-radius: 6px;
-                padding: 8px;
-                border: none;
-            }}
-            QPushButton:hover {{
-                background-color: #ff9f43;
-            }}
-        """)
-        layout.addWidget(btn)
-        
-        return card
-
     def __init__(self, api_key):
         super().__init__()
         self.bk = Backend()
         self.ai = AIEngine(api_key)
         self.current_exam = []
         self.generated_exams = {}
+
         self.setWindowTitle("BankAI Pro - 2025 Matrix Edition")
-        self.setGeometry(100, 100, 1400, 900)
+        self.resize(1400, 900)
         self.setStyleSheet(APP_STYLE)
         
-        w = QWidget(); self.setCentralWidget(w); l = QVBoxLayout(w)
-        l.addWidget(self.create_toolbar())
-        
-        self.stack = QTabWidget()
-        self.stack.addTab(self.create_home_tab(), "🏠 Trang chủ")
-        self.stack.addTab(self.create_manual_tab(), "✏️ Soạn đề (Thủ công)")
-        self.stack.addTab(self.create_matrix_tab(), "🎲 Tạo đề (Ma trận 2025)")
-        self.stack.addTab(self.create_ai_tab(), "🤖 Tạo đề (AI)")
-        
-        l.addWidget(self.stack)
-        self.lbl_stat = QLabel("Ready"); l.addWidget(self.lbl_stat)
+        # Central Container
+        central = QWidget()
+        self.setCentralWidget(central)
+
+        # Main Layout (Left: Sidebar | Right: Content)
+        main_layout = QHBoxLayout(central)
+        main_layout.setContentsMargins(0, 0, 0, 0)
+        main_layout.setSpacing(0)
+
+        # 1. Sidebar
+        self.sidebar = ModernSidebar()
+        self.sidebar.btn_group.idClicked.connect(self.switch_tab)
+        main_layout.addWidget(self.sidebar)
+
+        # 2. Stacked Content Area
+        self.stack = QStackedWidget()
+        self.stack.setStyleSheet("background-color: #f5f6fa;") # Soft Gray
+        main_layout.addWidget(self.stack)
+
+        # 3. Add Pages
+        self.page_dashboard = DashboardPage(self.bk)
+        self.page_dashboard.req_import = self.import_files
+        self.page_dashboard.req_matrix = lambda: self.switch_tab(2)
+
+        self.stack.addWidget(self.page_dashboard)           # Index 0: Dashboard
+        self.stack.addWidget(self.create_manual_tab())      # Index 1: Manual
+        self.stack.addWidget(self.create_matrix_tab())      # Index 2: Matrix
+        self.stack.addWidget(self.create_ai_tab())          # Index 3: AI
+        self.stack.addWidget(HistoryPage(self.bk))          # Index 4: History
+
+        # Init Timers
         QTimer.singleShot(100, self.load_stats)
 
-        # --- THÊM TIMER SCHEDULER ---
+        # Scheduler
         self.scheduler_timer = QTimer(self)
         self.scheduler_timer.timeout.connect(self.check_scheduled_tasks)
-        self.scheduler_timer.start(60000) # Kiểm tra mỗi 60 giây
-        
-        # Kiểm tra ngay khi mở app (xử lý các job bị lỡ)
+        self.scheduler_timer.start(60000)
         QTimer.singleShot(5000, self.check_scheduled_tasks)
+
+    def switch_tab(self, idx):
+        """Chuyển đổi giữa các tab với hiệu ứng"""
+        # Sync Sidebar Button
+        btn = self.sidebar.btn_group.button(idx)
+        if btn: btn.setChecked(True)
+
+        # Switch Page
+        self.stack.setCurrentIndex(idx)
+
+        # Refresh Data Logic
+        if idx == 0: self.page_dashboard.refresh_data()
+        elif idx == 4: self.stack.widget(4).load_data()
 
     def check_scheduled_tasks(self):
         """Kiểm tra xem có bài tập nào cần đăng không"""
@@ -6660,87 +6743,6 @@ class MainApp(QMainWindow):
         
         # Thông báo nhỏ ở góc (Tray notification nếu có, hoặc log)
         self.statusBar().showMessage(f"🤖 Tự động hóa: {msg}", 10000)
-
-    def create_toolbar(self):
-        container = QWidget()
-        # [STYLE MỚI] Gradient Cam + Bóng đổ + Viền dưới sáng
-        container.setStyleSheet("""
-            QWidget {
-                background: qlineargradient(x1:0, y1:0, x2:0, y2:1, stop:0 #ED840D, stop:1 #d35400);
-                border-bottom: 2px solid #ffaf40;
-            }
-        """)
-        layout = QHBoxLayout(container)
-        layout.setContentsMargins(20, 10, 20, 10) 
-        
-        # --- TRÁI: LOGO ---
-        brand_box = QHBoxLayout()
-        lbl_logo = QLabel("🏛️") 
-        lbl_logo.setStyleSheet("font-size: 28px; background: transparent; border: none;")
-        
-        lbl_text = QLabel("BANKAI PRO 2025")
-        lbl_text.setStyleSheet("""
-            font-size: 20px; font-weight: 900; color: #ffffff; letter-spacing: 1px; 
-            background: transparent; border: none; font-family: 'Segoe UI', Arial, sans-serif;
-        """)
-        brand_box.addWidget(lbl_logo); brand_box.addWidget(lbl_text)
-        layout.addLayout(brand_box)
-        
-        layout.addStretch()
-        
-        # --- PHẢI: CÁC NÚT CHỨC NĂNG ---
-        
-        # 1. Nút Bật Web Server (MỚI THÊM)
-        self.btn_web = QPushButton("🌍 Bật Thi Online")
-        self.btn_web.setCheckable(True) # Chế độ bật/tắt
-        self.btn_web.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.btn_web.setStyleSheet("""
-            QPushButton {
-                background-color: rgba(255, 255, 255, 0.2); 
-                border: 1px solid rgba(255, 255, 255, 0.5);
-                color: #ffffff; padding: 8px 15px; border-radius: 6px; font-weight: 700;
-            }
-            QPushButton:hover { background-color: rgba(255, 255, 255, 0.3); }
-            QPushButton:checked { 
-                background-color: #2ecc71; /* Màu xanh lá khi đang bật */
-                border-color: #27ae60; 
-                color: white;
-            }
-        """)
-        self.btn_web.clicked.connect(self.toggle_web_server)
-        layout.addWidget(self.btn_web)
-
-        # 2. Menu Tiện ích (Giữ nguyên)
-        btn_tools = QPushButton("🛠️  Tiện ích  ▼")
-        btn_tools.setCursor(Qt.CursorShape.PointingHandCursor)
-        btn_tools.setStyleSheet("""
-            QPushButton {
-                background-color: rgba(255, 255, 255, 0.15);
-                border: 1px solid rgba(255, 255, 255, 0.5);
-                color: #ffffff; padding: 8px 25px; border-radius: 6px; font-weight: 700;
-            }
-            QPushButton:hover { background-color: rgba(255, 255, 255, 0.3); }
-            QPushButton::menu-indicator { image: none; }
-        """)
-        
-        menu = QMenu(self)
-        menu.setStyleSheet("QMenu { background-color: #fff; border-radius: 4px; padding: 5px; } QMenu::item { padding: 8px 25px; color: #333; } QMenu::item:selected { background-color: #ED840D; color: white; }")
-        
-        menu.addAction("📖  Hướng dẫn sử dụng", self.open_help)
-        menu.addSeparator()
-        menu.addAction("🏷️  Gán ID6 Tự động", self.show_id6)
-        menu.addAction("🖼️  Quản lý Kho Hình ảnh", self.open_image_manager)
-        menu.addAction("🧹  Làm sạch & Check Lỗi", self.open_file_cleaner)
-        menu.addSeparator()
-        menu.addAction("⏰  Lên lịch Tự động", lambda: AutoSchedulerDialog(self).exec())
-        menu.addAction("💾  Xuất Database ra TeX", self.export_exam)
-        menu.addSeparator()
-        menu.addAction("❌  Thoát phần mềm", self.close)
-        
-        btn_tools.setMenu(menu)
-        layout.addWidget(btn_tools)
-
-        return container
 
     # THÊM CÁC HÀM NÀY VÀO CLASS MainApp
 
@@ -6855,7 +6857,7 @@ class MainApp(QMainWindow):
 
     # --- HÀM SLOT MỞ HỘP THOẠI ---
     def open_image_manager(self):
-        dlg = ImageManagerDialog(self)
+        dlg = ImageManagerDialog(self.bk, self)
         dlg.exec()
 
     # --- [MỚI] HÀM MỞ CỬA SỔ SOẠN BÀI ---
@@ -6871,67 +6873,6 @@ class MainApp(QMainWindow):
         self.planner_window.resize(1100, 700) # Kích thước cửa sổ to cho dễ nhìn
         self.planner_window.setWindowTitle("Công cụ Soạn Giảng & Lọc Đề - BankAI Pro")
         self.planner_window.show()
-
-    # ... (Giữ nguyên các hàm create_home_tab, create_manual_tab, create_matrix_tab, create_ai_tab ...)
-    # Lưu ý: Copy lại các hàm đó vào đây nếu bạn xóa nhầm, hoặc chỉ cần paste đoạn code bên dưới vào cuối class MainApp
-    
-    def create_home_tab(self):
-        """Trang chủ: Dashboard với nền Watermark"""
-        # [THAY ĐỔI] Sử dụng WatermarkWidget thay vì QWidget thường
-        w = WatermarkWidget("BANKAI PRO 2025") 
-        
-        main_layout = QVBoxLayout(w)
-        main_layout.setContentsMargins(50, 40, 50, 40)
-        main_layout.setSpacing(30)
-
-        # 1. Header (Giữ nguyên)
-        header_box = QVBoxLayout()
-        lbl_welcome = QLabel("TRUNG TÂM ĐIỀU KHIỂN")
-        lbl_welcome.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        # Bỏ background-color của label để hiện watermark bên dưới
-        lbl_welcome.setStyleSheet("font-size: 26px; font-weight: bold; color: #ffffff; background: transparent;")
-        
-        self.stat_lbl = QLabel("Hệ thống sẵn sàng...") 
-        self.stat_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.stat_lbl.setStyleSheet("font-size: 14px; color: #a4b0be; background: transparent;")
-        
-        header_box.addWidget(lbl_welcome)
-        header_box.addWidget(self.stat_lbl)
-        main_layout.addLayout(header_box)
-
-        # 2. Grid Chức năng (Giữ nguyên logic cũ)
-        grid = QGridLayout()
-        grid.setSpacing(25)
-        
-        # Các Card chức năng (Vẫn dùng create_big_card cũ)
-        card_import = self.create_big_card("NHẬP DỮ LIỆU", "Import câu hỏi LaTeX & Phân loại.", "📥", self.import_files)
-        card_planner = self.create_big_card("SOẠN BÀI GIẢNG", "Soạn chuyên đề & Lọc ma trận.", "📝", self.open_lesson_planner)
-        card_mix = self.create_big_card("TRỘN ĐỀ THI", "Đảo đề hoán vị & Xuất PDF/TeX.", "🔀", self.mix_and_export)
-        # Đổi callback từ self.open_classroom_dialog sang self.show_classroom_menu
-        card_class = self.create_big_card(
-            "GOOGLE CLASSROOM", 
-            "Đăng bài tập & Tổ chức Thi Online (Global).", 
-            "☁️", 
-            self.show_classroom_menu
-        )
-
-        grid.addWidget(card_import, 0, 0)
-        grid.addWidget(card_planner, 0, 1)
-        grid.addWidget(card_mix, 1, 0)
-        grid.addWidget(card_class, 1, 1)
-        
-        grid.setRowStretch(0, 1); grid.setRowStretch(1, 1)
-        grid.setColumnStretch(0, 1); grid.setColumnStretch(1, 1)
-
-        main_layout.addLayout(grid)
-        
-        # Footer (Background transparent để thấy watermark)
-        footer = QLabel(f"BankAI Pro v{APP_VERSION} © 2025 Matrix Edition")
-        footer.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        footer.setStyleSheet("color: rgba(255,255,255,0.3); margin-top: 20px; background: transparent;")
-        main_layout.addWidget(footer)
-
-        return w
 
     def quick_save_manual_exam(self):
         """Lưu nhanh danh sách câu hỏi hiện tại ra file TeX (Cấu trúc chuẩn như Classroom)"""
@@ -7751,14 +7692,15 @@ class MainApp(QMainWindow):
     def load_stats(self):
         """Cập nhật số liệu thống kê nhanh trên màn hình chính"""
         try:
+            # Refresh Dashboard Page
+            if hasattr(self, 'page_dashboard'):
+                self.page_dashboard.refresh_data()
+
+            # Update Status Bar if available
             total, _, _ = self.bk.get_dashboard_stats()
-            # Cập nhật Label ở trang chủ (self.stat_lbl)
-            if hasattr(self, 'stat_lbl'):
-                self.stat_lbl.setText(f"{total:,} câu hỏi")
-            
-            # Cập nhật Label ở thanh trạng thái dưới cùng (self.lbl_stat)
             if hasattr(self, 'lbl_stat'):
                 self.lbl_stat.setText(f"Database: {total:,} questions")
+
         except Exception as e:
             print(f"Lỗi load stats: {e}")
 
