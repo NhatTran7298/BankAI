@@ -6729,7 +6729,7 @@ class MainApp(QMainWindow):
         return w
 
     def quick_save_manual_exam(self):
-        """Lưu nhanh danh sách câu hỏi hiện tại ra file TeX (Không trộn, không cấu hình)"""
+        """Lưu nhanh danh sách câu hỏi hiện tại ra file TeX (Cấu trúc chuẩn như Classroom)"""
         # 1. Lấy dữ liệu từ Tree Widget
         questions = self.exam_lst.get_all_questions()
         
@@ -6742,23 +6742,57 @@ class MainApp(QMainWindow):
         if not path: return
 
         try:
-            # 3. Tạo nội dung (Ghép đơn giản)
-            content = [LATEX_TEMPLATE] # Header chuẩn
-            content.append("\\begin{center}\\textbf{ĐỀ THI ĐƯỢC CHỌN TỪ NGÂN HÀNG}\\end{center}")
-            content.append("\\setcounter{ex}{0}") # Reset đếm câu
+            # --- LOGIC MỚI: SẮP XẾP VÀ CHIA PHẦN ---
             
+            # 1. Sắp xếp theo Dạng (1->2->3->4)
+            sanitized_qs = []
             for q in questions:
-                content.append(q['content_tex'])
+                # Đảm bảo 'dang' luôn tồn tại, mặc định là 4 (Tự luận)
+                if 'dang' not in q: q['dang'] = 4
+                sanitized_qs.append(q)
+
+            sanitized_qs.sort(key=lambda x: x['dang'])
+
+            # 2. Chuẩn bị nội dung Body
+            body_content = [
+                r"\begin{center}\textbf{\Large ĐỀ THI ĐƯỢC CHỌN TỪ NGÂN HÀNG}\end{center}",
+                r"\setcounter{ex}{0}"
+            ]
             
-            content.append("\\end{document}") # Footer
+            current_dang = None
+            section_titles = {
+                1: r"\section*{PHẦN I. Câu trắc nghiệm nhiều phương án lựa chọn.} \textbf{\textit{Thí sinh trả lời các câu sau. Mỗi câu hỏi thí sinh chỉ lựa chọn một phương án.}}",
+                2: r"\section*{PHẦN II. Câu trắc nghiệm đúng sai.} \textbf{\textit{Thí sinh trả lời các câu sau. Trong mỗi ý {\bfseries a)}, {\bfseries b)}, {\bfseries c)}, {\bfseries d)} ở mỗi câu, thí sinh chọn đúng hoặc sai.}}",
+                3: r"\section*{PHẦN III. Câu trắc nghiệm trả lời ngắn.} \textbf{\textit{Thí sinh trả lời các câu sau.}}",
+                4: r"\section*{PHẦN IV. Tự luận / Khác}"
+            }
+
+            for q in sanitized_qs:
+                dang = q['dang']
+                # Nếu chuyển sang dạng mới -> Thêm tiêu đề phần
+                if dang != current_dang:
+                    if dang in section_titles:
+                        body_content.append(r"\vspace{0.5cm}")
+                        body_content.append(section_titles[dang])
+                        body_content.append(r"\vspace{0.2cm}")
+                    current_dang = dang
+
+                body_content.append(q.get('content_tex', ''))
+
+            # 3. Ghép vào Template
+            tex_body = "\n".join(body_content)
+            # LATEX_TEMPLATE có placeholder __CONTENT__
+            final_tex = LATEX_TEMPLATE.replace("__CONTENT__", tex_body)
 
             # 4. Ghi file
             with open(path, "w", encoding="utf-8") as f:
-                f.write("\n".join(content))
+                f.write(final_tex)
             
-            QMessageBox.information(self, "Thành công", f"Đã lưu file đề gốc tại:\n{path}")
+            QMessageBox.information(self, "Thành công", f"Đã lưu file đề gốc (Format chuẩn) tại:\n{path}")
             
         except Exception as e:
+            import traceback
+            traceback.print_exc()
             QMessageBox.critical(self, "Lỗi lưu file", str(e))
 
     def create_manual_tab(self):
