@@ -6042,8 +6042,14 @@ class MatrixEditorDialog(QDialog):
         self.mat_tb = QTableWidget()
         self.mat_tb.setColumnCount(10)
         self.mat_tb.setHorizontalHeaderLabels(["Nội dung", "I.NB", "I.TH", "I.VD", "II.NB", "II.TH", "II.VD", "III.NB", "III.TH", "III.VD"])
-        self.mat_tb.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
-        for i in range(1, 10): self.mat_tb.setColumnWidth(i, 45)
+
+        # [FIX] Cấu hình cột: Cột 0 giãn, Cột 1-9 cố định kích thước (45px)
+        header = self.mat_tb.horizontalHeader()
+        header.setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
+        for i in range(1, 10):
+            header.setSectionResizeMode(i, QHeaderView.ResizeMode.Fixed)
+            self.mat_tb.setColumnWidth(i, 45)
+
         self.mat_tb.verticalHeader().setVisible(False)
         left_layout.addWidget(self.mat_tb)
         
@@ -6085,7 +6091,7 @@ class MatrixEditorDialog(QDialog):
         
         gb_res_layout.addWidget(QLabel("<b>Xem trước Code LaTeX:</b>"))
         self.preview_txt = QTextEdit()
-        self.preview_txt.setMaximumHeight(200)
+        self.preview_txt.setFixedHeight(150) # Fix height as requested
         self.preview_txt.setReadOnly(True)
         gb_res_layout.addWidget(self.preview_txt)
         
@@ -6102,8 +6108,35 @@ class MatrixEditorDialog(QDialog):
         right_layout.addLayout(footer)
         
         splitter.addWidget(left_panel); splitter.addWidget(right_panel)
-        splitter.setStretchFactor(0, 1); splitter.setStretchFactor(1, 1)
+
+        # Adjust Splitter Sizes (Left larger)
+        splitter.setStretchFactor(0, 2)
+        splitter.setStretchFactor(1, 1)
+
         main_layout.addWidget(splitter)
+
+    def _get_display_label(self, q, idx):
+        """Helper visual formatting for question list item"""
+        subj_map = {'D': 'Đại', 'H': 'Hình'}
+        dang_map = {1: 'TN', 2: 'Đ/S', 3: 'TLN', 4: 'TL'}
+
+        g = q.get('grade', '?')
+        s_code = q.get('subject', '')
+        s = subj_map.get(s_code, s_code)
+
+        ch = q.get('chapter', '?')
+        bai = q.get('bai', '?')
+        lev = q.get('level', '?')
+        d_code = q.get('dang', 4)
+        d_str = dang_map.get(d_code, 'TL')
+
+        content = q.get('content_tex', '')
+        # Truncate content nicely
+        content_clean = content.replace("\n", " ").strip()
+        if len(content_clean) > 80:
+            content_clean = content_clean[:80] + "..."
+
+        return f"Câu {idx}: [{g}-{s}] [C{ch}.B{bai}] [{lev}] [{d_str}] - {content_clean}"
 
     # --- LOGIC MA TRẬN (ĐÃ FIX LỖI TÊN HÀM) ---
     def upd_mat(self):
@@ -6238,7 +6271,10 @@ class MatrixEditorDialog(QDialog):
     def add_q_to_list(self, q):
         self.final_questions.append(q)
         idx = self.res_list.count() + 1
-        txt = f"Câu {idx}: [ID:{q['id']}] {q.get('level')} | {q['content_tex'][:50]}..."
+
+        # Use helper for display text
+        txt = self._get_display_label(q, idx)
+
         item = QListWidgetItem(txt)
         item.setData(Qt.ItemDataRole.UserRole, q)
         
@@ -6268,7 +6304,11 @@ class MatrixEditorDialog(QDialog):
         if new_q:
             item.setData(Qt.ItemDataRole.UserRole, new_q)
             idx = self.res_list.row(item)
-            item.setText(f"Câu {idx+1}: [ID:{new_q['id']}] {new_q.get('level')} | {new_q['content_tex'][:50]}...")
+
+            # Use helper to update text
+            new_txt = self._get_display_label(new_q, idx + 1)
+            item.setText(new_txt)
+
             self.preview_txt.setText(new_q['content_tex'])
             self.final_questions[idx] = new_q
             QMessageBox.information(self, "Xong", f"Đã đổi sang câu ID: {new_q['id']}")
