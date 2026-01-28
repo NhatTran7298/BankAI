@@ -5179,130 +5179,163 @@ class HelpDialog(QDialog):
         # Dữ liệu hướng dẫn
         self.guides = [
             {
-                "title": "1. Nhập dữ liệu (Import TeX)",
+                "title": "1. Tổng quan & Kích hoạt",
+                "content": """
+                <h2>🚀 Tổng quan về BankAI Pro</h2>
+                <p>BankAI Pro là phần mềm quản lý ngân hàng câu hỏi Toán THPT (2025) toàn diện, tích hợp AI và Google Classroom.</p>
+                <h3>🔑 Kích hoạt bản quyền:</h3>
+                <ul>
+                    <li>Lần đầu mở app, hộp thoại kích hoạt sẽ xuất hiện.</li>
+                    <li>Nhập Email và chọn Gói bản quyền để nhận mã QR.</li>
+                    <li>Quét mã QR thanh toán qua ứng dụng ngân hàng.</li>
+                    <li>Kiểm tra Email để nhận <b>License Key</b>.</li>
+                    <li>Nhập Key vào phần mềm để kích hoạt vĩnh viễn.</li>
+                </ul>
+                <h3>🔑 Cấu hình API Key:</h3>
+                <ul>
+                    <li>Để dùng các tính năng AI, bạn cần có <b>Google Gemini API Key</b> (Miễn phí).</li>
+                    <li>Phần mềm sẽ yêu cầu nhập Key khi khởi động lần đầu hoặc khi Key cũ hết hạn.</li>
+                </ul>
+                """
+            },
+            {
+                "title": "2. Nhập dữ liệu (Import)",
                 "content": """
                 <h2>📥 Nhập câu hỏi từ file LaTeX</h2>
-                <p>Chức năng này giúp bạn đưa dữ liệu từ các file <code>.tex</code> có sẵn vào Ngân hàng câu hỏi.</p>
+                <p>Hỗ trợ nhập liệu thông minh, tự động nhận diện ID6 và hình ảnh.</p>
                 <h3>Các bước thực hiện:</h3>
                 <ol>
-                    <li>Bấm nút <b>"📥 Nhập TeX"</b> trên thanh công cụ.</li>
+                    <li>Bấm nút <b>"📥 NHẬP DỮ LIỆU"</b> ở Trang chủ (Dashboard).</li>
                     <li>Chọn một hoặc nhiều file <code>.tex</code> từ máy tính.</li>
-                    <li>Phần mềm sẽ tự động quét và phân tích:
+                    <li>Hệ thống sẽ tự động quét:
                         <ul>
-                            <li><b>Tách câu hỏi:</b> Tự động nhận diện môi trường <code>ex, bt, vd</code>.</li>
-                            <li><b>Quét ảnh:</b> Tự động tìm và copy hình ảnh đi kèm.</li>
-                            <li><b>Đọc ID:</b> Tự động nhận diện ID6 (ví dụ <code>[2D1N1-1]</code>).</li>
+                            <li><b>Môi trường:</b> <code>ex, bt, vd</code>.</li>
+                            <li><b>Hình ảnh:</b> Tự động copy và lưu đường dẫn ảnh.</li>
+                            <li><b>ID6:</b> Tự động đọc ID chuẩn 2025 (ví dụ <code>[2D1N1-1]</code>).</li>
                         </ul>
                     </li>
-                    <li>Nếu phát hiện câu hỏi <b>thiếu ID</b>, phần mềm sẽ hỏi bạn có muốn gán ID ngay không.</li>
-                    <li>Cuối cùng, dữ liệu sạch sẽ được lưu vào Database.</li>
+                    <li><b>Xử lý thiếu ID:</b> Nếu câu hỏi chưa có ID, hộp thoại Gán ID sẽ hiện ra để bạn bổ sung ngay lập tức.</li>
                 </ol>
-                <hr>
-                <p><i>Lưu ý: File TeX cần tuân thủ cấu trúc gói <code>ex_test</code> để đạt hiệu quả tốt nhất.</i></p>
+                <p><i>Mẹo: Dùng công cụ "Gán ID6 Tự động" trong menu Tiện ích để AI giúp bạn gắn thẻ nhanh hơn.</i></p>
                 """
             },
             {
-                "title": "2. Soạn bài & Lọc đề",
+                "title": "3. Soạn đề Thủ công",
                 "content": """
-                <h2>📝 Soạn Bài Dạy & Lọc Câu Hỏi</h2>
-                <p>Đây là khu vực chính để bạn tìm kiếm và trích xuất câu hỏi cho đề thi/bài giảng.</p>
-                <h3>Cách sử dụng:</h3>
+                <h2>✏️ Soạn đề & Lọc câu hỏi</h2>
+                <p>Tab "Soạn đề (Thủ công)" cho phép bạn chọn lựa từng câu hỏi theo ý muốn.</p>
+                <h3>Hướng dẫn:</h3>
                 <ul>
-                    <li><b>Bộ lọc:</b> Chọn Lớp, Môn, Chương, Bài, Mức độ để lọc câu hỏi mong muốn.</li>
-                    <li><b>Chọn câu hỏi:</b> Tích vào ô vuông đầu dòng để chọn câu hỏi.</li>
-                    <li><b>Chức năng:</b>
+                    <li><b>Bộ lọc bên trái:</b> Chọn Lớp, Môn, Chương, Bài, Mức độ để tìm câu hỏi.</li>
+                    <li><b>Kéo thả (Drag & Drop):</b>
                         <ul>
-                            <li><b>📋 COPY LATEX:</b> Copy code LaTeX của các câu đã chọn vào bộ nhớ đệm (để dán sang file khác).</li>
-                            <li><b>Thêm vào đề:</b> (Đang phát triển) Đưa sang danh sách trộn đề.</li>
+                            <li>Kéo câu hỏi từ danh sách kết quả (bên trái).</li>
+                            <li>Thả vào danh sách <b>"ĐỀ ĐANG SOẠN"</b> (bên phải).</li>
                         </ul>
                     </li>
+                    <li><b>Menu chuột phải:</b> Tại danh sách bên phải, click chuột phải vào câu hỏi để:
+                        <ul>
+                            <li><b>🔄 Đổi câu khác:</b> Hệ thống sẽ tìm một câu tương đương (cùng ID6) để thay thế.</li>
+                            <li><b>🗑️ Xóa câu này:</b> Loại bỏ câu hỏi khỏi đề.</li>
+                        </ul>
+                    </li>
+                    <li><b>Lưu & Xuất:</b> Bấm <b>"💾 Lưu File TeX"</b> để tải về đề gốc hoặc bấm <b>"☁️ Đăng Classroom"</b> để tạo bài thi online.</li>
                 </ul>
                 """
             },
             {
-                "title": "3. Trộn đề thi (Mixer)",
+                "title": "4. Tạo đề Ma trận (2025)",
                 "content": """
-                <h2>🔀 Trộn & Xuất Đề Thi</h2>
-                <p>Tạo ra nhiều mã đề hoán vị từ bộ câu hỏi gốc.</p>
+                <h2>🎲 Tạo đề theo Ma trận 2025</h2>
+                <p>Công cụ mạnh mẽ để tạo đề thi chuẩn cấu trúc Bộ GD&ĐT (3 phần: TN, Đ/S, TLN).</p>
                 <h3>Quy trình:</h3>
                 <ol>
-                    <li>Vào tab <b>"✏️ Soạn đề (Thủ công)"</b>.</li>
-                    <li>Kéo thả câu hỏi từ danh sách bên trái sang danh sách <b>"ĐỀ ĐANG SOẠN"</b> bên phải.</li>
-                    <li>Bấm nút <b>"🔀 Trộn & Xuất Đề"</b> trên thanh công cụ.</li>
-                    <li>Nhập số lượng đề cần tạo (ví dụ: 4 mã đề).</li>
-                    <li>Chọn nơi lưu file. Phần mềm sẽ xuất ra file <code>.tex</code> chứa tất cả các mã đề kèm bảng đáp án.</li>
-                </ol>
-                <h3>Tính năng thông minh:</h3>
-                <ul>
-                    <li><b>Đảo vị trí câu:</b> Các câu hỏi sẽ được xáo trộn ngẫu nhiên.</li>
-                    <li><b>Đảo đáp án:</b> Tự động hoán vị A, B, C, D và cập nhật lại lời giải/đáp án đúng.</li>
-                </ul>
-                """
-            },
-            {
-                "title": "4. Đăng Classroom & Forms",
-                "content": """
-                <h2>🏫 Đăng bài lên Google Classroom</h2>
-                <p>Tự động tạo bài tập, file PDF và Google Forms chấm điểm tự động.</p>
-                <h3>Hướng dẫn:</h3>
-                <ol>
-                    <li>Chuẩn bị danh sách câu hỏi (từ chức năng Trộn đề hoặc Soạn đề).</li>
-                    <li>Bấm nút <b>"🏫 Đăng Classroom"</b>.</li>
-                    <li>Nhập Tiêu đề bài tập và chọn Lớp học.</li>
-                    <li>Bấm <b>"🚀 Đăng bài ngay"</b>. Hệ thống sẽ:
+                    <li>Vào tab <b>"🎲 Tạo đề (Ma trận 2025)"</b>.</li>
+                    <li>Bấm nút <b>"🎛️ MỞ BẢNG ĐIỀU KHIỂN MA TRẬN"</b>.</li>
+                    <li><b>Cấu hình ma trận:</b>
                         <ul>
-                            <li>Biên dịch đề ra file PDF và upload lên Drive.</li>
-                            <li>Tạo Google Forms (Quiz) với đầy đủ câu hỏi và đáp án đúng.</li>
-                            <li>Gán bài tập vào Classroom cho học sinh.</li>
+                            <li>Chọn Khối lớp và Môn học.</li>
+                            <li>Bảng ma trận sẽ hiện ra danh sách các Bài học.</li>
+                            <li>Nhập số lượng câu hỏi vào các ô tương ứng (Phần I, II, III).</li>
                         </ul>
                     </li>
+                    <li><b>Công cụ hỗ trợ:</b>
+                        <ul>
+                            <li><b>⚡ Copy dòng 1:</b> Sao chép cấu hình dòng đầu tiên cho tất cả các dòng dưới.</li>
+                            <li><b>🧹 Xóa trắng:</b> Reset toàn bộ bảng.</li>
+                        </ul>
+                    </li>
+                    <li>Bấm <b>"⏩ TRÍCH XUẤT ĐỀ THI"</b> để xem trước danh sách câu hỏi.</li>
+                    <li>Cuối cùng, bấm <b>"✅ HOÀN TẤT & TẠO ĐỀ"</b> để chuyển dữ liệu sang bộ xử lý.</li>
                 </ol>
-                <p style='color:red'><b>Lưu ý:</b> Cần đăng nhập Google và cấp quyền đầy đủ lần đầu tiên.</p>
                 """
             },
             {
-                "title": "5. Công cụ AI (Gán ID, Check lỗi)",
+                "title": "5. Trí tuệ nhân tạo (AI)",
                 "content": """
-                <h2>🤖 Các Công Cụ Trí Tuệ Nhân Tạo (AI)</h2>
-                <p>Sử dụng Gemini Pro để hỗ trợ xử lý dữ liệu.</p>
-                <h3>1. Gán ID6 Tự động:</h3>
-                <ul>
-                    <li>Vào menu <b>Công cụ > Gán ID6</b>.</li>
-                    <li>Bấm <b>"🤖 Tự động điền AI"</b>. AI sẽ đọc nội dung câu hỏi và tự động điền Lớp, Chương, Bài, Mức độ dựa trên khung chương trình 2025.</li>
-                </ul>
-                <h3>2. Làm sạch & Check lỗi:</h3>
-                <ul>
-                    <li>Vào menu <b>Công cụ > Làm sạch & Check lỗi</b>.</li>
-                    <li>Chọn file TeX cần kiểm tra.</li>
-                    <li>AI sẽ dò lỗi chính tả, lỗi logic toán học và báo cáo lại cho bạn sửa.</li>
-                </ul>
-                """
-            },
-            {
-                "title": "6. Quản lý Hình ảnh",
-                "content": """
-                <h2>🖼️ Quản lý Thư viện Hình ảnh</h2>
-                <p>Giúp quản lý và sửa lỗi đường dẫn ảnh trong file LaTeX.</p>
-                <ul>
-                    <li>Vào menu <b>Công cụ > Quản lý Kho Hình ảnh</b>.</li>
-                    <li>Phần mềm sẽ liệt kê tất cả các ảnh đang được sử dụng trong Database.</li>
-                    <li>Bạn có thể thay thế đường dẫn ảnh hàng loạt (ví dụ chuyển từ ảnh offline sang link ảnh online Imgur/Drive).</li>
-                </ul>
-                """
-            },
-            {
-                "title": "7. Lên lịch tự động",
-                "content": """
-                <h2>⏰ Lên lịch Tự động Đăng bài</h2>
-                <p>Tự động giao bài tập về nhà hàng ngày cho học sinh.</p>
+                <h2>🤖 Tạo đề thông minh với AI</h2>
+                <p>Sử dụng Gemini AI để sinh ra các câu hỏi tương tự (Clone câu hỏi).</p>
+                <h3>Cách dùng:</h3>
                 <ol>
-                    <li>Vào menu <b>Công cụ > Lên lịch Tự động</b>.</li>
-                    <li>Chọn Lớp học, Môn, Chương và số lượng câu hỏi mỗi đề.</li>
-                    <li>Đặt giờ (ví dụ: 20:00 hàng ngày).</li>
-                    <li>Chọn số ngày muốn chạy (ví dụ: 7 ngày tới).</li>
-                    <li>Bấm <b>"Lên lịch"</b>.</li>
+                    <li>Vào tab <b>"🤖 Tạo đề (AI)"</b>.</li>
+                    <li><b>Load đề gốc:</b> Bấm "1. Load câu hỏi..." để lấy các câu hỏi từ đề đang soạn.</li>
+                    <li><b>Cấu hình:</b> Nhập số lượng đề cần tạo (ví dụ: 3 đề tương đương).</li>
+                    <li>Bấm <b>"2. CHẠY AI"</b>. Hệ thống sẽ gửi từng câu hỏi lên AI để viết lại (đổi số liệu, ngữ cảnh).</li>
+                    <li>Xem kết quả ở cột bên phải. Bạn có thể xuất ra file LaTeX bằng nút <b>"3. 💾 Xuất ra Code LaTeX"</b>.</li>
                 </ol>
-                <p>Hệ thống sẽ tự động thức dậy đúng giờ, sinh đề ngẫu nhiên và đăng lên Classroom.</p>
+                """
+            },
+            {
+                "title": "6. Tổ chức Thi Online",
+                "content": """
+                <h2>🌍 Tổ chức Thi Trực tuyến (Web Server)</h2>
+                <p>Biến máy tính của bạn thành máy chủ thi trắc nghiệm (LAN/Internet).</p>
+                <h3>Hướng dẫn:</h3>
+                <ol>
+                    <li>Sau khi có danh sách câu hỏi (từ Soạn thủ công hoặc Ma trận), bấm nút <b>"🌍 Bật Thi Online"</b> ở góc trên bên phải.</li>
+                    <li>Cấu hình tên kỳ thi và thời gian làm bài.</li>
+                    <li>Màn hình <b>Giám sát (Monitor)</b> sẽ hiện ra cùng với địa chỉ IP/Link thi.</li>
+                    <li><b>Học sinh:</b> Truy cập link được cung cấp, nhập tên để vào phòng chờ.</li>
+                    <li><b>Giáo viên:</b> Bấm <b>"🚀 GIAO BÀI NGAY"</b> trên màn hình Monitor để bắt đầu tính giờ.</li>
+                    <li>Kết quả làm bài sẽ được cập nhật realtime về máy giáo viên.</li>
+                </ol>
+                """
+            },
+            {
+                "title": "7. Google Classroom",
+                "content": """
+                <h2>☁️ Tích hợp Google Classroom</h2>
+                <p>Đăng bài tập và đề thi trực tiếp lên lớp học Google.</p>
+                <h3>Các chế độ:</h3>
+                <ul>
+                    <li><b>📤 Đăng bài tập (PDF/Form):</b>
+                        <ul>
+                            <li>Tạo file PDF đề thi và upload lên Drive.</li>
+                            <li>Tạo Google Forms (Quiz) tự chấm điểm.</li>
+                            <li>Gán bài vào Classroom.</li>
+                        </ul>
+                    </li>
+                    <li><b>🌍 Tổ chức Thi Online (Global):</b>
+                        <ul>
+                            <li>Tạo một đường link thi online (Web Server).</li>
+                            <li>Gửi link này vào Classroom để học sinh truy cập.</li>
+                        </ul>
+                    </li>
+                </ul>
+                <p><i>Lưu ý: Bạn cần cấp quyền truy cập Google Drive/Classroom/Forms cho ứng dụng ở lần đầu sử dụng.</i></p>
+                """
+            },
+            {
+                "title": "8. Công cụ & Tiện ích",
+                "content": """
+                <h2>🛠️ Các Công cụ hỗ trợ</h2>
+                <p>Nằm trong menu <b>"Tiện ích"</b> trên thanh công cụ:</p>
+                <ul>
+                    <li><b>🏷️ Gán ID6 Tự động:</b> Sử dụng AI để phân tích nội dung câu hỏi và điền mã ID6 chuẩn (Lớp-Môn-Chương-Bài-Mức độ) cho các câu hỏi thiếu ID trong Database.</li>
+                    <li><b>🖼️ Quản lý Kho Hình ảnh:</b> Quét toàn bộ Database để liệt kê các ảnh đang dùng. Hỗ trợ thay thế hàng loạt đường dẫn ảnh (ví dụ: chuyển từ ảnh local sang ảnh online).</li>
+                    <li><b>🧹 Làm sạch & Check lỗi:</b> (Đang phát triển) Dò lỗi chính tả và lỗi LaTeX.</li>
+                    <li><b>⏰ Lên lịch Tự động:</b> Cài đặt lịch để phần mềm tự động sinh đề và đăng lên Classroom hàng ngày/hàng tuần.</li>
+                </ul>
                 """
             }
         ]
