@@ -2810,6 +2810,129 @@ class ImageManagerDialog(QDialog):
             self.backend.conn.rollback()
             QMessageBox.critical(self, "Lỗi Update", f"Có lỗi xảy ra, đã hoàn tác: {e}")
 
+class ImageMappingDialog(QDialog):
+    """Hộp thoại map ảnh từ file TeX ngoài vào đường dẫn cục bộ"""
+    def __init__(self, image_names, default_dir, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("🔗 Liên kết Hình ảnh (External TeX)")
+        self.setMinimumSize(900, 600)
+        self.image_names = sorted(list(set(image_names))) # Unique names
+        self.default_dir = default_dir
+        self.mapping = {} # {filename: path}
+
+        self.setup_ui()
+        # Tự động tìm trong thư mục chứa file TeX trước
+        self.auto_scan(self.default_dir)
+
+    def setup_ui(self):
+        layout = QVBoxLayout(self)
+
+        # Header
+        info = QLabel(f"⚠️ Phát hiện {len(self.image_names)} hình ảnh được nhúng trong file TeX.\n"
+                      "Vui lòng đảm bảo các đường dẫn ảnh là chính xác (đường dẫn tuyệt đối) để hệ thống có thể biên dịch.")
+        info.setStyleSheet("background: #fff3cd; color: #856404; padding: 10px; border-radius: 5px; font-weight: bold;")
+        layout.addWidget(info)
+
+        # Table
+        self.table = QTableWidget(len(self.image_names), 3)
+        self.table.setHorizontalHeaderLabels(["Tên ảnh (Trong TeX)", "Đường dẫn thực tế trên máy", "Thao tác"])
+        self.table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
+        layout.addWidget(self.table)
+
+        for i, name in enumerate(self.image_names):
+            self.table.setItem(i, 0, QTableWidgetItem(name))
+
+            item_path = QTableWidgetItem("")
+            item_path.setForeground(QColor("red")) # Mặc định đỏ (chưa tìm thấy)
+            self.table.setItem(i, 1, item_path)
+
+            btn = QPushButton("📂 Chọn file")
+            btn.setCursor(Qt.CursorShape.PointingHandCursor)
+            btn.clicked.connect(lambda _, r=i: self.browse_image(r))
+            self.table.setCellWidget(i, 2, btn)
+
+        # Action Buttons
+        btn_box = QHBoxLayout()
+        btn_scan = QPushButton("🔄 Quét ảnh trong thư mục...")
+        btn_scan.clicked.connect(self.manual_scan)
+
+        btn_ok = QPushButton("✅ Xác nhận & Cập nhật Link")
+        btn_ok.setProperty("class", "btn-primary")
+        btn_ok.clicked.connect(self.accept)
+
+        btn_cancel = QPushButton("Bỏ qua (Giữ nguyên)")
+        btn_cancel.clicked.connect(self.reject)
+
+        btn_box.addWidget(btn_scan)
+        btn_box.addStretch()
+        btn_box.addWidget(btn_ok)
+        btn_box.addWidget(btn_cancel)
+        layout.addLayout(btn_box)
+
+    def auto_scan(self, directory):
+        """Tự động tìm ảnh trong thư mục và điền vào bảng"""
+        if not directory or not os.path.exists(directory): return
+
+        # Tạo map {filename: fullpath} trong folder (quét đệ quy nhẹ)
+        files_in_dir = {}
+        try:
+            # Chỉ quét 1 cấp thư mục để tránh treo nếu folder quá lớn, hoặc dùng os.listdir
+            for f in os.listdir(directory):
+                full = os.path.join(directory, f)
+                if os.path.isfile(full):
+                    files_in_dir[f] = full
+        except: pass
+
+        # Điền vào bảng
+        count_found = 0
+        for i in range(self.table.rowCount()):
+            name_in_tex = self.table.item(i, 0).text()
+
+            # Logic 1: Nếu tên trong TeX là đường dẫn tuyệt đối và tồn tại -> OK
+            if os.path.isabs(name_in_tex) and os.path.exists(name_in_tex):
+                 self.set_path(i, name_in_tex)
+                 count_found += 1
+                 continue
+
+            # Logic 2: Lấy tên file (basename) để đối chiếu
+            basename = os.path.basename(name_in_tex)
+
+            # Nếu tìm thấy trong folder hiện tại
+            if basename in files_in_dir:
+                self.set_path(i, files_in_dir[basename])
+                count_found += 1
+            # Logic 3: Thử check đường dẫn tương đối
+            else:
+                 candidate = os.path.join(directory, name_in_tex)
+                 if os.path.exists(candidate):
+                     self.set_path(i, candidate)
+                     count_found += 1
+
+    def manual_scan(self):
+        d = QFileDialog.getExistingDirectory(self, "Chọn thư mục chứa ảnh")
+        if d: self.auto_scan(d)
+
+    def browse_image(self, row):
+        name = self.table.item(row, 0).text()
+        f, _ = QFileDialog.getOpenFileName(self, f"Tìm ảnh: {name}", self.default_dir, "Images (*.png *.jpg *.jpeg *.pdf *.eps)")
+        if f:
+            self.set_path(row, f)
+
+    def set_path(self, row, path):
+        path = path.replace("\\", "/") # Chuẩn hóa path cho LaTeX
+        self.table.setItem(row, 1, QTableWidgetItem(path))
+        self.table.item(row, 1).setToolTip(path)
+        self.table.item(row, 1).setForeground(QColor("green")) # Đổi màu xanh
+
+    def accept(self):
+        # Collect data
+        for i in range(self.table.rowCount()):
+            name = self.table.item(i, 0).text()
+            path = self.table.item(i, 1).text()
+            if path and os.path.exists(path):
+                self.mapping[name] = path
+        super().accept()
+
 # =============================================================================
 # 7. MAIN APP
 # =============================================================================
@@ -7696,6 +7819,38 @@ class MainApp(QMainWindow):
         dlg.exec()
 
     # Trong class MainApp
+    def resolve_external_images(self, questions, tex_path):
+        """Hàm helper: Quét và map lại đường dẫn ảnh cho file TeX ngoài"""
+        all_imgs = set()
+        for q in questions:
+            content = q.get('content_tex', '')
+            # Regex tìm \includegraphics{...} hoặc \includegraphics[...]{...}
+            matches = re.findall(r"\\includegraphics(?:\[.*?\])?\{(.*?)\}", content)
+            for m in matches:
+                all_imgs.add(m.strip())
+
+        if not all_imgs: return questions
+
+        # Mở Dialog để user confirm (luôn mở nếu có ảnh để đảm bảo tính đúng đắn)
+        tex_dir = os.path.dirname(tex_path)
+        dlg = ImageMappingDialog(list(all_imgs), tex_dir, self)
+
+        if dlg.exec() == QDialog.DialogCode.Accepted:
+            final_map = dlg.mapping
+            # Update questions
+            for q in questions:
+                # Chỉ update những câu có chứa ảnh đã được map
+                # (Duyệt qua map để replace)
+                content = q.get('content_tex', '')
+                for img_name, abs_path in final_map.items():
+                    # Pattern: \includegraphics[...]{img_name} hoặc \includegraphics{img_name}
+                    pattern = r"(\\includegraphics(?:\[.*?\])?)\{" + re.escape(img_name) + r"\}"
+                    if re.search(pattern, content):
+                        content = re.sub(pattern, r"\1{" + abs_path + "}", content)
+                q['content_tex'] = content
+
+        return questions
+
     def toggle_web_server(self):
         """Bật/Tắt Web Server - Fix lỗi tự chạy khi chưa bấm OK"""
         if self.btn_web.isChecked():
@@ -7728,7 +7883,8 @@ class MainApp(QMainWindow):
                     try:
                         parsed_qs, _ = self.bk.analyze_tex_file(path)
                         if parsed_qs:
-                            questions = parsed_qs
+                            # [MỚI] Xử lý link ảnh
+                            questions = self.resolve_external_images(parsed_qs, path)
                             QMessageBox.information(self, "Đã đọc file", f"Đã tìm thấy {len(questions)} câu hỏi từ file.")
                         else:
                             self.btn_web.setChecked(False)
@@ -7993,6 +8149,9 @@ class MainApp(QMainWindow):
                 try:
                     parsed_qs, _ = self.bk.analyze_tex_file(path)
                     if parsed_qs:
+                        # [MỚI] Xử lý link ảnh
+                        parsed_qs = self.resolve_external_images(parsed_qs, path)
+
                         # Preprocess: Loại bỏ trích dẫn nguồn đề sau số câu
                         # Regex tìm: \begin{ex}[...] -> \begin{ex}
                         import re
