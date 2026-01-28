@@ -40,18 +40,12 @@ import subprocess
 import platform
 import warnings
 import os.path
-from google.auth.transport.requests import Request
-from google.oauth2.credentials import Credentials
-from google_auth_oauthlib.flow import InstalledAppFlow
-from googleapiclient.discovery import build
-from googleapiclient.http import MediaFileUpload
 # =============================================================================
 # MODULE BẢN QUYỀN (LICENSE SYSTEM)
 # =============================================================================
 import uuid
 import platform
 import hashlib
-import requests
 from PyQt6.QtWidgets import (QDialog, QVBoxLayout, QHBoxLayout, QLabel, QLineEdit, 
                              QPushButton, QMessageBox, QRadioButton, QButtonGroup, 
                              QGroupBox, QApplication, QWidget, QCheckBox, QProgressBar, QAbstractItemView, QTimeEdit, QSizePolicy, QDialogButtonBox)
@@ -210,6 +204,7 @@ class ActivationDialog(QDialog):
         QApplication.processEvents()
         
         try:
+            import requests
             data = requests.get(qr_url).content
             pixmap = QPixmap()
             pixmap.loadFromData(data)
@@ -231,6 +226,7 @@ class ActivationDialog(QDialog):
         
         try:
             # Gửi dữ liệu lên Google Sheet
+            import requests
             payload = {"key": key, "hwid": self.hwid, "action": "activate", "version": APP_VERSION}
             response = requests.post(API_URL, json=payload, timeout=10)
             
@@ -300,7 +296,6 @@ os.environ['no_proxy'] = '*'
 # Tắt log rác của thư viện Google
 logging.getLogger('google.generativeai').setLevel(logging.ERROR)
 
-import pandas as pd
 # Tìm dòng from PyQt6.QtWidgets import ... và thêm QSplashScreen vào
 import PyQt6.QtWidgets
 from PyQt6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout, 
@@ -920,7 +915,6 @@ class AIEngine:
 # =============================================================================
 # 3. BACKGROUND WORKERS
 # =============================================================================
-from concurrent.futures import ThreadPoolExecutor
 
 class ExamPreparerWorker(QThread):
     progress = pyqtSignal(str) 
@@ -1343,6 +1337,11 @@ class GoogleManagerFull:
 
     def authenticate(self):
         """Xác thực OAuth2 (Có cơ chế tự động fix lỗi Token/Scope)"""
+        from google.auth.transport.requests import Request
+        from google.oauth2.credentials import Credentials
+        from google_auth_oauthlib.flow import InstalledAppFlow
+        from googleapiclient.discovery import build
+
         try:
             if os.path.exists(self.token_path):
                 self.creds = Credentials.from_authorized_user_file(self.token_path, self.SCOPES)
@@ -1391,6 +1390,7 @@ class GoogleManagerFull:
 
     def upload_to_drive(self, file_path):
         """Upload file PDF lên Drive và trả về ID"""
+        from googleapiclient.http import MediaFileUpload
         file_metadata = {'name': os.path.basename(file_path)}
         media = MediaFileUpload(file_path, mimetype='application/pdf', resumable=True)
         file = self.service_drive.files().create(body=file_metadata, media_body=media, fields='id').execute()
@@ -1416,6 +1416,7 @@ class GoogleManagerFull:
     # Tìm trong class GoogleManagerFull
     def upload_image(self, file_path):
         """Upload ảnh lên Drive, SET PUBLIC và trả về ID (Fix lỗi Failed to fetch)"""
+        from googleapiclient.http import MediaFileUpload
         file_metadata = {'name': os.path.basename(file_path)}
         media = MediaFileUpload(file_path, mimetype='image/png')
         
@@ -6363,7 +6364,7 @@ class MainApp(QMainWindow):
         
         l.addWidget(self.stack)
         self.lbl_stat = QLabel("Ready"); l.addWidget(self.lbl_stat)
-        self.load_stats()
+        QTimer.singleShot(100, self.load_stats)
 
         # --- THÊM TIMER SCHEDULER ---
         self.scheduler_timer = QTimer(self)
