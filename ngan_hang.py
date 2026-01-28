@@ -6800,7 +6800,7 @@ class MainApp(QMainWindow):
                 r"\begin{center}\textbf{\Large ĐỀ THI ĐƯỢC CHỌN TỪ NGÂN HÀNG}\end{center}",
                 r"\setcounter{ex}{0}"
             ]
-            
+
             current_dang = None
             section_titles = {
                 1: r"\section*{PHẦN I. Câu trắc nghiệm nhiều phương án lựa chọn.} \textbf{\textit{Thí sinh trả lời các câu sau. Mỗi câu hỏi thí sinh chỉ lựa chọn một phương án.}}",
@@ -7966,9 +7966,54 @@ class MainApp(QMainWindow):
             self.create_online_classroom_exam() # Hàm mới bên dưới
 
     def create_online_classroom_exam(self):
-        # 1. Lấy dữ liệu câu hỏi
-        questions, source = self.get_current_exam_questions()
-        if not questions: return QMessageBox.warning(self, "Lỗi", "Chưa có câu hỏi!")
+        # TẠO MENU LỰA CHỌN NGUỒN ĐỀ
+        menu = QMenu(self)
+        menu.setStyleSheet("QMenu { font-size: 14px; padding: 5px; } QMenu::item { padding: 10px 20px; }")
+
+        act_sys = menu.addAction("1. Lấy đề từ hệ thống (Tab hiện tại)")
+        act_ext = menu.addAction("2. Lấy đề từ bên ngoài (File TeX)")
+
+        # Hiển thị menu ngay tại vị trí con trỏ chuột
+        action = menu.exec(QCursor.pos())
+
+        questions = []
+
+        if action == act_sys:
+            # 1. LẤY DỮ LIỆU TỪ TAB ĐANG MỞ
+            questions, src = self.get_current_exam_questions()
+            if not questions:
+                return QMessageBox.warning(self, "Chưa có câu hỏi",
+                    f"Tab '{src}' chưa có dữ liệu.\nVui lòng tạo đề trước khi bật thi Online.")
+
+        elif action == act_ext:
+            # 2. LẤY TỪ FILE BÊN NGOÀI
+            path, _ = QFileDialog.getOpenFileName(self, "Chọn file TeX đề thi", "", "TeX Files (*.tex)")
+            if path:
+                # Parse file để lấy câu hỏi và đáp án
+                try:
+                    parsed_qs, _ = self.bk.analyze_tex_file(path)
+                    if parsed_qs:
+                        # Preprocess: Loại bỏ trích dẫn nguồn đề sau số câu
+                        # Regex tìm: \begin{ex}[...] -> \begin{ex}
+                        import re
+                        for q in parsed_qs:
+                            if 'content_tex' in q:
+                                # Xóa optional argument của ex/bt/vd
+                                q['content_tex'] = re.sub(r"(\\begin\s*\{(?:ex|bt|vd)\})\s*\[.*?\]", r"\1", q['content_tex'], flags=re.DOTALL)
+
+                        questions = parsed_qs
+                        QMessageBox.information(self, "Đã đọc file", f"Đã tìm thấy {len(questions)} câu hỏi từ file.\n(Đã tự động ẩn trích dẫn nguồn đề)")
+                    else:
+                        QMessageBox.warning(self, "Lỗi", "Không tìm thấy câu hỏi nào trong file (cần có môi trường ex/bt)!")
+                        return
+                except Exception as e:
+                    QMessageBox.critical(self, "Lỗi đọc file", str(e))
+                    return
+            else:
+                return
+        else:
+            # Hủy bỏ (click ra ngoài)
+            return
 
         # 2. Hộp thoại Cấu hình thi (Thời gian, Tiêu đề)
         dlg = ExamConfigDialog(questions, self)
@@ -7999,7 +8044,7 @@ class MainApp(QMainWindow):
                 # Khởi tạo Server nếu chưa có
                 if not hasattr(self, 'web_thread'): self.web_thread = WebServerThread(DB_PATH)
                 
-                # Chạy Worker biên dịch PDF
+                # Chạy Worker biên dịch PDF (Không truyền external_tex để dùng Main hệ thống)
                 self.prep_worker = ExamPreparerWorker(config['questions'], exam_title, config['time'])
                 
                 # --- HÀM XỬ LÝ KHI PDF ĐÃ SẴN SÀNG ---
