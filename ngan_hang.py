@@ -40,18 +40,12 @@ import subprocess
 import platform
 import warnings
 import os.path
-from google.auth.transport.requests import Request
-from google.oauth2.credentials import Credentials
-from google_auth_oauthlib.flow import InstalledAppFlow
-from googleapiclient.discovery import build
-from googleapiclient.http import MediaFileUpload
 # =============================================================================
 # MODULE BẢN QUYỀN (LICENSE SYSTEM)
 # =============================================================================
 import uuid
 import platform
 import hashlib
-import requests
 from PyQt6.QtWidgets import (QDialog, QVBoxLayout, QHBoxLayout, QLabel, QLineEdit, 
                              QPushButton, QMessageBox, QRadioButton, QButtonGroup, 
                              QGroupBox, QApplication, QWidget, QCheckBox, QProgressBar, QAbstractItemView, QTimeEdit, QSizePolicy, QDialogButtonBox)
@@ -210,6 +204,7 @@ class ActivationDialog(QDialog):
         QApplication.processEvents()
         
         try:
+            import requests
             data = requests.get(qr_url).content
             pixmap = QPixmap()
             pixmap.loadFromData(data)
@@ -231,6 +226,7 @@ class ActivationDialog(QDialog):
         
         try:
             # Gửi dữ liệu lên Google Sheet
+            import requests
             payload = {"key": key, "hwid": self.hwid, "action": "activate", "version": APP_VERSION}
             response = requests.post(API_URL, json=payload, timeout=10)
             
@@ -300,7 +296,6 @@ os.environ['no_proxy'] = '*'
 # Tắt log rác của thư viện Google
 logging.getLogger('google.generativeai').setLevel(logging.ERROR)
 
-import pandas as pd
 # Tìm dòng from PyQt6.QtWidgets import ... và thêm QSplashScreen vào
 import PyQt6.QtWidgets
 from PyQt6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout, 
@@ -920,40 +915,40 @@ class AIEngine:
 # =============================================================================
 # 3. BACKGROUND WORKERS
 # =============================================================================
-from concurrent.futures import ThreadPoolExecutor
 
 class ExamPreparerWorker(QThread):
     progress = pyqtSignal(str) 
     finished = pyqtSignal(bool, dict)
 
-    def __init__(self, questions, title, duration=90):
+    # [CẬP NHẬT 1] Thêm tham số external_pdf vào hàm khởi tạo
+    def __init__(self, questions, title, duration=90, external_pdf=""):
         super().__init__()
         self.questions = list(questions) 
         self.title = title
         self.duration = duration
-
-    # (Hàm extract_latex_key bạn có thể xóa hoặc giữ nguyên, 
-    # vì bây giờ ta tin tưởng key từ Dialog gửi sang hơn)
+        self.external_pdf = external_pdf # Lưu đường dẫn file PDF ngoài
 
     def run(self):
         try:
             self.progress.emit("Đang xử lý dữ liệu...")
             
-            # 1. Sắp xếp (Sort)
+            # --- 1. SẮP XẾP VÀ CHUẨN BỊ DỮ LIỆU CÂU HỎI ---
             sanitized_qs = []
             for q in self.questions:
-                # Đảm bảo 'dang' luôn tồn tại
+                # Đảm bảo 'dang' luôn tồn tại (Mặc định là 4 - Tự luận nếu thiếu)
                 q['dang'] = q.get('dang', 4)
                 sanitized_qs.append(q)
             
+            # Sắp xếp câu hỏi theo dạng (Trắc nghiệm -> Đ/S -> Điền khuyết -> Tự luận)
             sanitized_qs.sort(key=lambda x: x['dang'])
 
-            # 2. Tạo nội dung
+            # Chuẩn bị nội dung LaTeX (Dùng khi không có file PDF ngoài)
             full_content = [
                 r"\begin{center}\textbf{\Large " + self.title + r"}\end{center}",
                 r"\setcounter{ex}{0}"
             ]
             
+            # Danh sách chứa đáp án để chấm điểm (exam_matrix)
             exam_data = []
             current_dang = None
             
@@ -966,9 +961,10 @@ class ExamPreparerWorker(QThread):
 
             for idx, q in enumerate(sanitized_qs):
                 dang = q['dang']
-                # Lấy content an toàn
+                # Lấy nội dung LaTeX an toàn
                 tex = q.get('content_tex', q.get('content', ''))
                 
+                # Thêm tiêu đề phần nếu chuyển sang dạng mới
                 if dang != current_dang:
                     if dang in section_titles:
                         full_content.append(r"\vspace{0.5cm}")
@@ -978,37 +974,56 @@ class ExamPreparerWorker(QThread):
                 
                 full_content.append(tex)
                 
-                # [FIX LỖI KEY ERROR]
-                # Luôn dùng .get() và giá trị mặc định
+                # Lấy đáp án (Key) để chấm điểm
                 final_key = q.get('key', '?')
-                
-                # Nếu key là None hoặc rỗng
                 if not final_key: final_key = "?"
                 
                 exam_data.append({
-                    "id": idx + 1,
-                    "type": dang,
-                    "key": final_key
+                    "id": idx + 1,      # STT câu hỏi (1, 2, 3...)
+                    "type": dang,       # Dạng câu hỏi
+                    "key": final_key    # Đáp án đúng
                 })
 
-            # 3. Biên dịch PDF
-            self.progress.emit("Đang biên dịch PDF...")
-            tex_body = "\n".join(full_content)
-            final_tex = LATEX_TEMPLATE.replace("__CONTENT__", tex_body)
-            
+            # --- 2. XỬ LÝ FILE PDF ---
             import time
-            pdf_name = f"online_exam_{int(time.time())}"
-            msg, pdf_path = PDFCompiler.compile_tex_to_pdf(final_tex, pdf_name)
+            import shutil
             
-            if not pdf_path:
-                self.finished.emit(False, {"error": msg})
-                return
+            # Tạo tên file ngẫu nhiên dựa trên thời gian
+            pdf_name = f"online_exam_{int(time.time())}"
+            
+            # Thư mục build (cache)
+            build_dir = os.path.join(os.path.expanduser("~"), ".bankai_build")
+            if not os.path.exists(build_dir): os.makedirs(build_dir)
+            
+            final_pdf_path = os.path.join(build_dir, f"{pdf_name}.pdf")
 
+            # [CẬP NHẬT 2] Kiểm tra: Nếu có PDF ngoài -> Copy vào. Nếu không -> Biên dịch LaTeX.
+            if self.external_pdf and os.path.exists(self.external_pdf):
+                self.progress.emit("Đang xử lý file PDF có sẵn...")
+                try:
+                    # Copy file PDF của bạn vào thư mục hệ thống và đổi tên chuẩn
+                    shutil.copy2(self.external_pdf, final_pdf_path)
+                except Exception as e:
+                    self.finished.emit(False, {"error": f"Lỗi copy file PDF: {str(e)}"})
+                    return
+            else:
+                self.progress.emit("Đang biên dịch PDF từ LaTeX...")
+                tex_body = "\n".join(full_content)
+                final_tex = LATEX_TEMPLATE.replace("__CONTENT__", tex_body)
+                
+                msg, path = PDFCompiler.compile_tex_to_pdf(final_tex, pdf_name)
+                
+                if not path:
+                    self.finished.emit(False, {"error": msg})
+                    return
+                # path ở đây chính là final_pdf_path do PDFCompiler trả về
+
+            # --- 3. TRẢ KẾT QUẢ VỀ MAIN THREAD ---
             result_payload = {
                 "pdf_filename": f"{pdf_name}.pdf",
-                "exam_matrix": exam_data,
+                "exam_matrix": exam_data,       # Ma trận đáp án để chấm điểm
                 "title": self.title,
-                "duration": self.duration * 60
+                "duration": self.duration * 60  # Đổi sang giây
             }
             self.finished.emit(True, result_payload)
 
@@ -1343,6 +1358,11 @@ class GoogleManagerFull:
 
     def authenticate(self):
         """Xác thực OAuth2 (Có cơ chế tự động fix lỗi Token/Scope)"""
+        from google.auth.transport.requests import Request
+        from google.oauth2.credentials import Credentials
+        from google_auth_oauthlib.flow import InstalledAppFlow
+        from googleapiclient.discovery import build
+
         try:
             if os.path.exists(self.token_path):
                 self.creds = Credentials.from_authorized_user_file(self.token_path, self.SCOPES)
@@ -1391,6 +1411,7 @@ class GoogleManagerFull:
 
     def upload_to_drive(self, file_path):
         """Upload file PDF lên Drive và trả về ID"""
+        from googleapiclient.http import MediaFileUpload
         file_metadata = {'name': os.path.basename(file_path)}
         media = MediaFileUpload(file_path, mimetype='application/pdf', resumable=True)
         file = self.service_drive.files().create(body=file_metadata, media_body=media, fields='id').execute()
@@ -1416,6 +1437,7 @@ class GoogleManagerFull:
     # Tìm trong class GoogleManagerFull
     def upload_image(self, file_path):
         """Upload ảnh lên Drive, SET PUBLIC và trả về ID (Fix lỗi Failed to fetch)"""
+        from googleapiclient.http import MediaFileUpload
         file_metadata = {'name': os.path.basename(file_path)}
         media = MediaFileUpload(file_path, mimetype='image/png')
         
@@ -4533,6 +4555,8 @@ import os
 import socket
 
 # --- CẬP NHẬT: WEB SERVER THREAD (FIX LỖI GMAIL CÁ NHÂN) ---
+# Tìm class WebServerThread và thay thế toàn bộ bằng đoạn này:
+
 class WebServerThread(QThread):
     students_changed = pyqtSignal(list)
     server_ready = pyqtSignal(str)
@@ -4543,20 +4567,25 @@ class WebServerThread(QThread):
         self.db_path = db_path
         self.port = 8080
         
-        # [QUAN TRỌNG] Nhớ điền Token thật của bạn vào đây
-        # Ví dụ: self.ngrok_auth_token = "2Alk..."
+        # Token Ngrok của bạn
         self.ngrok_auth_token = "38b8oxhy3hT98ZoeqO7kl8RJaJP_axFQ8v4mjEtV5EvSwLzb"
         
         self.public_url = ""
-        
-        # [ĐÃ SỬA] Thêm lại dòng này để tránh lỗi Attribute Error
         self.ip_address = "0.0.0.0" 
-        
         self.gg_sync = None 
         
+        # Biến lưu trữ dữ liệu đề thi tạm thời
+        self.current_exam_data = {} 
+
         # Thư mục chứa các file đề thi riêng biệt
         self.exam_dir = os.path.join(os.path.expanduser("~"), ".bankai_exams")
         if not os.path.exists(self.exam_dir): os.makedirs(self.exam_dir)
+
+    # [FIX LỖI QUAN TRỌNG] THÊM HÀM NÀY VÀO
+    def set_exam_data(self, data):
+        """Nhận dữ liệu đề thi từ MainApp"""
+        self.current_exam_data = data
+    # ------------------------------------------------
 
     def save_exam_file(self, exam_id, data):
         """Lưu đề thi thành file riêng biệt"""
@@ -4572,9 +4601,28 @@ class WebServerThread(QThread):
             with open(filepath, "r", encoding="utf-8") as f:
                 return json.load(f)
         return None
+    
+    # Hàm phát đề cho danh sách học sinh (được gọi từ Monitor Dialog)
+    def distribute_exam(self, target_ids):
+        # Lấy exam_id từ dữ liệu hiện tại (được set trong on_exam_prepared)
+        if not self.current_exam_data or 'examId' not in self.current_exam_data:
+            print("❌ Chưa có ID đề thi để phát!")
+            return
+
+        exam_data = self.load_exam_file(self.current_exam_data['examId'])
+        if exam_data:
+            # Gửi tín hiệu phát đề qua WebSocket Manager
+            # Lưu ý: Cần chạy async trong luồng riêng hoặc dùng asyncio.run_coroutine_threadsafe
+            # Nhưng ở đây ta dùng mẹo: Manager là biến toàn cục
+            import asyncio
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+            loop.run_until_complete(manager.broadcast_exam(exam_data, target_ids))
+            loop.close()
+            print(f"🚀 Đã phát đề cho {len(target_ids)} học sinh.")
 
     def sync_score(self, exam_data, name, email, score):
-        """Đồng bộ điểm lên Google Classroom (Cần dữ liệu của đúng đề đó)"""
+        """Đồng bộ điểm lên Google Classroom"""
         cid = exam_data.get('courseId')
         cwid = exam_data.get('courseWorkId')
         if not cid or not cwid: return
@@ -4586,7 +4634,6 @@ class WebServerThread(QThread):
         try:
             print(f"🔄 Đang đồng bộ điểm cho đề {exam_data.get('title')}...")
             service = self.gg_sync.service_class
-            # ... (Giữ nguyên logic tìm HS và chấm điểm như cũ) ...
             students = service.courses().students().list(courseId=cid).execute().get('students', [])
             user_id = None
             target_email = email.strip().lower()
@@ -4617,10 +4664,8 @@ class WebServerThread(QThread):
         app = FastAPI()
         app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_credentials=True, allow_methods=["*"], allow_headers=["*"])
 
-        # URL ĐỘNG: /exam/{exam_id} -> Trả về giao diện thi
         @app.get("/exam/{exam_id}")
         async def get_exam_ui(exam_id: str):
-            # Kiểm tra xem đề có tồn tại không
             if self.load_exam_file(exam_id):
                 return HTMLResponse(content=WEB_UI_TEMPLATE)
             return HTMLResponse(content="<h1>❌ Đề thi không tồn tại hoặc đã bị xóa!</h1>")
@@ -4639,11 +4684,16 @@ class WebServerThread(QThread):
                     
                     if data.get('type') == 'JOIN':
                         exam_id = data.get('exam_id')
+                        # Load đề thi từ file dựa trên ID học sinh gửi lên
                         exam_data = self.load_exam_file(exam_id)
                         
                         if exam_data:
-                            manager.register(websocket, data['id'], f"{data['name']} [{exam_id}]")
-                            # Gửi đúng đề thi đó cho học sinh
+                            # Đăng ký vào manager
+                            manager.register(websocket, data['id'], f"{data['name']}")
+                            # Gửi tín hiệu về UI MainApp để cập nhật danh sách
+                            self.students_changed.emit(manager.get_list())
+                            
+                            # Gửi đề thi cho học sinh
                             await websocket.send_json({"type": "START_EXAM", "data": exam_data})
                         else:
                             await websocket.send_json({"type": "ERROR", "message": "Không tìm thấy dữ liệu đề thi!"})
@@ -4652,19 +4702,27 @@ class WebServerThread(QThread):
                         exam_id = data.get('exam_id')
                         exam_data = self.load_exam_file(exam_id)
                         if exam_data:
-                            # Lưu kết quả
                             try:
                                 conn = sqlite3.connect(self.db_path)
                                 conn.execute("INSERT INTO exam_results (student_name, exam_title, score, detail) VALUES (?, ?, ?, ?)",
                                     (f"{data['name']} ({data['email']})", exam_data.get('title'), data['score'], json.dumps(data['detail'])))
                                 conn.commit(); conn.close()
-                                self.result_received.emit(f"{data['name']} - {exam_data.get('title')}", float(data['score']))
+                                
+                                # Gửi tín hiệu về UI MainApp
+                                self.result_received.emit(f"{data['name']}", float(data['score']))
+                                # Cập nhật danh sách (để hiện trạng thái đã nộp)
+                                self.students_changed.emit(manager.get_list())
                                 
                                 # Đồng bộ Classroom
                                 self.sync_score(exam_data, data['name'], data['email'], data['score'])
                             except: pass
 
-            except: pass
+            except WebSocketDisconnect:
+                # Xử lý khi học sinh thoát
+                # (Cần logic remove trong Manager, ở đây ta đơn giản là emit lại list)
+                self.students_changed.emit(manager.get_list())
+            except Exception as e:
+                print(f"WS Error: {e}")
 
         # Kết nối Ngrok
         MY_DOMAIN = "oncologic-premeditative-nada.ngrok-free.dev"
@@ -5178,130 +5236,163 @@ class HelpDialog(QDialog):
         # Dữ liệu hướng dẫn
         self.guides = [
             {
-                "title": "1. Nhập dữ liệu (Import TeX)",
+                "title": "1. Tổng quan & Kích hoạt",
+                "content": """
+                <h2>🚀 Tổng quan về BankAI Pro</h2>
+                <p>BankAI Pro là phần mềm quản lý ngân hàng câu hỏi Toán THPT (2025) toàn diện, tích hợp AI và Google Classroom.</p>
+                <h3>🔑 Kích hoạt bản quyền:</h3>
+                <ul>
+                    <li>Lần đầu mở app, hộp thoại kích hoạt sẽ xuất hiện.</li>
+                    <li>Nhập Email và chọn Gói bản quyền để nhận mã QR.</li>
+                    <li>Quét mã QR thanh toán qua ứng dụng ngân hàng.</li>
+                    <li>Kiểm tra Email để nhận <b>License Key</b>.</li>
+                    <li>Nhập Key vào phần mềm để kích hoạt vĩnh viễn.</li>
+                </ul>
+                <h3>🔑 Cấu hình API Key:</h3>
+                <ul>
+                    <li>Để dùng các tính năng AI, bạn cần có <b>Google Gemini API Key</b> (Miễn phí).</li>
+                    <li>Phần mềm sẽ yêu cầu nhập Key khi khởi động lần đầu hoặc khi Key cũ hết hạn.</li>
+                </ul>
+                """
+            },
+            {
+                "title": "2. Nhập dữ liệu (Import)",
                 "content": """
                 <h2>📥 Nhập câu hỏi từ file LaTeX</h2>
-                <p>Chức năng này giúp bạn đưa dữ liệu từ các file <code>.tex</code> có sẵn vào Ngân hàng câu hỏi.</p>
+                <p>Hỗ trợ nhập liệu thông minh, tự động nhận diện ID6 và hình ảnh.</p>
                 <h3>Các bước thực hiện:</h3>
                 <ol>
-                    <li>Bấm nút <b>"📥 Nhập TeX"</b> trên thanh công cụ.</li>
+                    <li>Bấm nút <b>"📥 NHẬP DỮ LIỆU"</b> ở Trang chủ (Dashboard).</li>
                     <li>Chọn một hoặc nhiều file <code>.tex</code> từ máy tính.</li>
-                    <li>Phần mềm sẽ tự động quét và phân tích:
+                    <li>Hệ thống sẽ tự động quét:
                         <ul>
-                            <li><b>Tách câu hỏi:</b> Tự động nhận diện môi trường <code>ex, bt, vd</code>.</li>
-                            <li><b>Quét ảnh:</b> Tự động tìm và copy hình ảnh đi kèm.</li>
-                            <li><b>Đọc ID:</b> Tự động nhận diện ID6 (ví dụ <code>[2D1N1-1]</code>).</li>
+                            <li><b>Môi trường:</b> <code>ex, bt, vd</code>.</li>
+                            <li><b>Hình ảnh:</b> Tự động copy và lưu đường dẫn ảnh.</li>
+                            <li><b>ID6:</b> Tự động đọc ID chuẩn 2025 (ví dụ <code>[2D1N1-1]</code>).</li>
                         </ul>
                     </li>
-                    <li>Nếu phát hiện câu hỏi <b>thiếu ID</b>, phần mềm sẽ hỏi bạn có muốn gán ID ngay không.</li>
-                    <li>Cuối cùng, dữ liệu sạch sẽ được lưu vào Database.</li>
+                    <li><b>Xử lý thiếu ID:</b> Nếu câu hỏi chưa có ID, hộp thoại Gán ID sẽ hiện ra để bạn bổ sung ngay lập tức.</li>
                 </ol>
-                <hr>
-                <p><i>Lưu ý: File TeX cần tuân thủ cấu trúc gói <code>ex_test</code> để đạt hiệu quả tốt nhất.</i></p>
+                <p><i>Mẹo: Dùng công cụ "Gán ID6 Tự động" trong menu Tiện ích để AI giúp bạn gắn thẻ nhanh hơn.</i></p>
                 """
             },
             {
-                "title": "2. Soạn bài & Lọc đề",
+                "title": "3. Soạn đề Thủ công",
                 "content": """
-                <h2>📝 Soạn Bài Dạy & Lọc Câu Hỏi</h2>
-                <p>Đây là khu vực chính để bạn tìm kiếm và trích xuất câu hỏi cho đề thi/bài giảng.</p>
-                <h3>Cách sử dụng:</h3>
+                <h2>✏️ Soạn đề & Lọc câu hỏi</h2>
+                <p>Tab "Soạn đề (Thủ công)" cho phép bạn chọn lựa từng câu hỏi theo ý muốn.</p>
+                <h3>Hướng dẫn:</h3>
                 <ul>
-                    <li><b>Bộ lọc:</b> Chọn Lớp, Môn, Chương, Bài, Mức độ để lọc câu hỏi mong muốn.</li>
-                    <li><b>Chọn câu hỏi:</b> Tích vào ô vuông đầu dòng để chọn câu hỏi.</li>
-                    <li><b>Chức năng:</b>
+                    <li><b>Bộ lọc bên trái:</b> Chọn Lớp, Môn, Chương, Bài, Mức độ để tìm câu hỏi.</li>
+                    <li><b>Kéo thả (Drag & Drop):</b> 
                         <ul>
-                            <li><b>📋 COPY LATEX:</b> Copy code LaTeX của các câu đã chọn vào bộ nhớ đệm (để dán sang file khác).</li>
-                            <li><b>Thêm vào đề:</b> (Đang phát triển) Đưa sang danh sách trộn đề.</li>
+                            <li>Kéo câu hỏi từ danh sách kết quả (bên trái).</li>
+                            <li>Thả vào danh sách <b>"ĐỀ ĐANG SOẠN"</b> (bên phải).</li>
                         </ul>
                     </li>
+                    <li><b>Menu chuột phải:</b> Tại danh sách bên phải, click chuột phải vào câu hỏi để:
+                        <ul>
+                            <li><b>🔄 Đổi câu khác:</b> Hệ thống sẽ tìm một câu tương đương (cùng ID6) để thay thế.</li>
+                            <li><b>🗑️ Xóa câu này:</b> Loại bỏ câu hỏi khỏi đề.</li>
+                        </ul>
+                    </li>
+                    <li><b>Lưu & Xuất:</b> Bấm <b>"💾 Lưu File TeX"</b> để tải về đề gốc hoặc bấm <b>"☁️ Đăng Classroom"</b> để tạo bài thi online.</li>
                 </ul>
                 """
             },
             {
-                "title": "3. Trộn đề thi (Mixer)",
+                "title": "4. Tạo đề Ma trận (2025)",
                 "content": """
-                <h2>🔀 Trộn & Xuất Đề Thi</h2>
-                <p>Tạo ra nhiều mã đề hoán vị từ bộ câu hỏi gốc.</p>
+                <h2>🎲 Tạo đề theo Ma trận 2025</h2>
+                <p>Công cụ mạnh mẽ để tạo đề thi chuẩn cấu trúc Bộ GD&ĐT (3 phần: TN, Đ/S, TLN).</p>
                 <h3>Quy trình:</h3>
                 <ol>
-                    <li>Vào tab <b>"✏️ Soạn đề (Thủ công)"</b>.</li>
-                    <li>Kéo thả câu hỏi từ danh sách bên trái sang danh sách <b>"ĐỀ ĐANG SOẠN"</b> bên phải.</li>
-                    <li>Bấm nút <b>"🔀 Trộn & Xuất Đề"</b> trên thanh công cụ.</li>
-                    <li>Nhập số lượng đề cần tạo (ví dụ: 4 mã đề).</li>
-                    <li>Chọn nơi lưu file. Phần mềm sẽ xuất ra file <code>.tex</code> chứa tất cả các mã đề kèm bảng đáp án.</li>
-                </ol>
-                <h3>Tính năng thông minh:</h3>
-                <ul>
-                    <li><b>Đảo vị trí câu:</b> Các câu hỏi sẽ được xáo trộn ngẫu nhiên.</li>
-                    <li><b>Đảo đáp án:</b> Tự động hoán vị A, B, C, D và cập nhật lại lời giải/đáp án đúng.</li>
-                </ul>
-                """
-            },
-            {
-                "title": "4. Đăng Classroom & Forms",
-                "content": """
-                <h2>🏫 Đăng bài lên Google Classroom</h2>
-                <p>Tự động tạo bài tập, file PDF và Google Forms chấm điểm tự động.</p>
-                <h3>Hướng dẫn:</h3>
-                <ol>
-                    <li>Chuẩn bị danh sách câu hỏi (từ chức năng Trộn đề hoặc Soạn đề).</li>
-                    <li>Bấm nút <b>"🏫 Đăng Classroom"</b>.</li>
-                    <li>Nhập Tiêu đề bài tập và chọn Lớp học.</li>
-                    <li>Bấm <b>"🚀 Đăng bài ngay"</b>. Hệ thống sẽ:
+                    <li>Vào tab <b>"🎲 Tạo đề (Ma trận 2025)"</b>.</li>
+                    <li>Bấm nút <b>"🎛️ MỞ BẢNG ĐIỀU KHIỂN MA TRẬN"</b>.</li>
+                    <li><b>Cấu hình ma trận:</b>
                         <ul>
-                            <li>Biên dịch đề ra file PDF và upload lên Drive.</li>
-                            <li>Tạo Google Forms (Quiz) với đầy đủ câu hỏi và đáp án đúng.</li>
-                            <li>Gán bài tập vào Classroom cho học sinh.</li>
+                            <li>Chọn Khối lớp và Môn học.</li>
+                            <li>Bảng ma trận sẽ hiện ra danh sách các Bài học.</li>
+                            <li>Nhập số lượng câu hỏi vào các ô tương ứng (Phần I, II, III).</li>
                         </ul>
                     </li>
+                    <li><b>Công cụ hỗ trợ:</b>
+                        <ul>
+                            <li><b>⚡ Copy dòng 1:</b> Sao chép cấu hình dòng đầu tiên cho tất cả các dòng dưới.</li>
+                            <li><b>🧹 Xóa trắng:</b> Reset toàn bộ bảng.</li>
+                        </ul>
+                    </li>
+                    <li>Bấm <b>"⏩ TRÍCH XUẤT ĐỀ THI"</b> để xem trước danh sách câu hỏi.</li>
+                    <li>Cuối cùng, bấm <b>"✅ HOÀN TẤT & TẠO ĐỀ"</b> để chuyển dữ liệu sang bộ xử lý.</li>
                 </ol>
-                <p style='color:red'><b>Lưu ý:</b> Cần đăng nhập Google và cấp quyền đầy đủ lần đầu tiên.</p>
                 """
             },
             {
-                "title": "5. Công cụ AI (Gán ID, Check lỗi)",
+                "title": "5. Trí tuệ nhân tạo (AI)",
                 "content": """
-                <h2>🤖 Các Công Cụ Trí Tuệ Nhân Tạo (AI)</h2>
-                <p>Sử dụng Gemini Pro để hỗ trợ xử lý dữ liệu.</p>
-                <h3>1. Gán ID6 Tự động:</h3>
-                <ul>
-                    <li>Vào menu <b>Công cụ > Gán ID6</b>.</li>
-                    <li>Bấm <b>"🤖 Tự động điền AI"</b>. AI sẽ đọc nội dung câu hỏi và tự động điền Lớp, Chương, Bài, Mức độ dựa trên khung chương trình 2025.</li>
-                </ul>
-                <h3>2. Làm sạch & Check lỗi:</h3>
-                <ul>
-                    <li>Vào menu <b>Công cụ > Làm sạch & Check lỗi</b>.</li>
-                    <li>Chọn file TeX cần kiểm tra.</li>
-                    <li>AI sẽ dò lỗi chính tả, lỗi logic toán học và báo cáo lại cho bạn sửa.</li>
-                </ul>
-                """
-            },
-            {
-                "title": "6. Quản lý Hình ảnh",
-                "content": """
-                <h2>🖼️ Quản lý Thư viện Hình ảnh</h2>
-                <p>Giúp quản lý và sửa lỗi đường dẫn ảnh trong file LaTeX.</p>
-                <ul>
-                    <li>Vào menu <b>Công cụ > Quản lý Kho Hình ảnh</b>.</li>
-                    <li>Phần mềm sẽ liệt kê tất cả các ảnh đang được sử dụng trong Database.</li>
-                    <li>Bạn có thể thay thế đường dẫn ảnh hàng loạt (ví dụ chuyển từ ảnh offline sang link ảnh online Imgur/Drive).</li>
-                </ul>
-                """
-            },
-            {
-                "title": "7. Lên lịch tự động",
-                "content": """
-                <h2>⏰ Lên lịch Tự động Đăng bài</h2>
-                <p>Tự động giao bài tập về nhà hàng ngày cho học sinh.</p>
+                <h2>🤖 Tạo đề thông minh với AI</h2>
+                <p>Sử dụng Gemini AI để sinh ra các câu hỏi tương tự (Clone câu hỏi).</p>
+                <h3>Cách dùng:</h3>
                 <ol>
-                    <li>Vào menu <b>Công cụ > Lên lịch Tự động</b>.</li>
-                    <li>Chọn Lớp học, Môn, Chương và số lượng câu hỏi mỗi đề.</li>
-                    <li>Đặt giờ (ví dụ: 20:00 hàng ngày).</li>
-                    <li>Chọn số ngày muốn chạy (ví dụ: 7 ngày tới).</li>
-                    <li>Bấm <b>"Lên lịch"</b>.</li>
+                    <li>Vào tab <b>"🤖 Tạo đề (AI)"</b>.</li>
+                    <li><b>Load đề gốc:</b> Bấm "1. Load câu hỏi..." để lấy các câu hỏi từ đề đang soạn.</li>
+                    <li><b>Cấu hình:</b> Nhập số lượng đề cần tạo (ví dụ: 3 đề tương đương).</li>
+                    <li>Bấm <b>"2. CHẠY AI"</b>. Hệ thống sẽ gửi từng câu hỏi lên AI để viết lại (đổi số liệu, ngữ cảnh).</li>
+                    <li>Xem kết quả ở cột bên phải. Bạn có thể xuất ra file LaTeX bằng nút <b>"3. 💾 Xuất ra Code LaTeX"</b>.</li>
                 </ol>
-                <p>Hệ thống sẽ tự động thức dậy đúng giờ, sinh đề ngẫu nhiên và đăng lên Classroom.</p>
+                """
+            },
+            {
+                "title": "6. Tổ chức Thi Online",
+                "content": """
+                <h2>🌍 Tổ chức Thi Trực tuyến (Web Server)</h2>
+                <p>Biến máy tính của bạn thành máy chủ thi trắc nghiệm (LAN/Internet).</p>
+                <h3>Hướng dẫn:</h3>
+                <ol>
+                    <li>Sau khi có danh sách câu hỏi (từ Soạn thủ công hoặc Ma trận), bấm nút <b>"🌍 Bật Thi Online"</b> ở góc trên bên phải.</li>
+                    <li>Cấu hình tên kỳ thi và thời gian làm bài.</li>
+                    <li>Màn hình <b>Giám sát (Monitor)</b> sẽ hiện ra cùng với địa chỉ IP/Link thi.</li>
+                    <li><b>Học sinh:</b> Truy cập link được cung cấp, nhập tên để vào phòng chờ.</li>
+                    <li><b>Giáo viên:</b> Bấm <b>"🚀 GIAO BÀI NGAY"</b> trên màn hình Monitor để bắt đầu tính giờ.</li>
+                    <li>Kết quả làm bài sẽ được cập nhật realtime về máy giáo viên.</li>
+                </ol>
+                """
+            },
+            {
+                "title": "7. Google Classroom",
+                "content": """
+                <h2>☁️ Tích hợp Google Classroom</h2>
+                <p>Đăng bài tập và đề thi trực tiếp lên lớp học Google.</p>
+                <h3>Các chế độ:</h3>
+                <ul>
+                    <li><b>📤 Đăng bài tập (PDF/Form):</b>
+                        <ul>
+                            <li>Tạo file PDF đề thi và upload lên Drive.</li>
+                            <li>Tạo Google Forms (Quiz) tự chấm điểm.</li>
+                            <li>Gán bài vào Classroom.</li>
+                        </ul>
+                    </li>
+                    <li><b>🌍 Tổ chức Thi Online (Global):</b>
+                        <ul>
+                            <li>Tạo một đường link thi online (Web Server).</li>
+                            <li>Gửi link này vào Classroom để học sinh truy cập.</li>
+                        </ul>
+                    </li>
+                </ul>
+                <p><i>Lưu ý: Bạn cần cấp quyền truy cập Google Drive/Classroom/Forms cho ứng dụng ở lần đầu sử dụng.</i></p>
+                """
+            },
+            {
+                "title": "8. Công cụ & Tiện ích",
+                "content": """
+                <h2>🛠️ Các Công cụ hỗ trợ</h2>
+                <p>Nằm trong menu <b>"Tiện ích"</b> trên thanh công cụ:</p>
+                <ul>
+                    <li><b>🏷️ Gán ID6 Tự động:</b> Sử dụng AI để phân tích nội dung câu hỏi và điền mã ID6 chuẩn (Lớp-Môn-Chương-Bài-Mức độ) cho các câu hỏi thiếu ID trong Database.</li>
+                    <li><b>🖼️ Quản lý Kho Hình ảnh:</b> Quét toàn bộ Database để liệt kê các ảnh đang dùng. Hỗ trợ thay thế hàng loạt đường dẫn ảnh (ví dụ: chuyển từ ảnh local sang ảnh online).</li>
+                    <li><b>🧹 Làm sạch & Check lỗi:</b> (Đang phát triển) Dò lỗi chính tả và lỗi LaTeX.</li>
+                    <li><b>⏰ Lên lịch Tự động:</b> Cài đặt lịch để phần mềm tự động sinh đề và đăng lên Classroom hàng ngày/hàng tuần.</li>
+                </ul>
                 """
             }
         ]
@@ -5484,6 +5575,16 @@ class ExamConfigDialog(QDialog):
         gl.addWidget(self.inp_time, 0, 3)
         layout.addWidget(grp_info)
 
+        # [THÊM ĐOẠN NÀY VÀO SAU Ô NHẬP THỜI GIAN]
+        gl.addWidget(QLabel("File PDF riêng (nếu có):"), 1, 0)
+        self.txt_pdf_path = QLineEdit()
+        self.txt_pdf_path.setPlaceholderText("Để trống nếu muốn App tự sinh đề...")
+        btn_browse = QPushButton("📂 Chọn")
+        btn_browse.clicked.connect(self.browse_pdf)
+        gl.addWidget(self.txt_pdf_path, 1, 1, 1, 2)
+        gl.addWidget(btn_browse, 1, 3)
+        # [KẾT THÚC THÊM]
+
         # --- PHẦN 2: BẢNG SOÁT ---
         self.table = QTableWidget()
         self.table.setColumnCount(4)
@@ -5499,6 +5600,11 @@ class ExamConfigDialog(QDialog):
         btns.accepted.connect(self.accept_data)
         btns.rejected.connect(self.reject)
         layout.addWidget(btns)
+
+    # [THÊM HÀM NÀY VÀO TRONG CLASS]
+    def browse_pdf(self):
+        f, _ = QFileDialog.getOpenFileName(self, "Chọn File PDF", "", "PDF Files (*.pdf)")
+        if f: self.txt_pdf_path.setText(f)
 
     def load_data(self):
         self.table.setRowCount(len(self.questions))
@@ -5646,11 +5752,13 @@ class ExamConfigDialog(QDialog):
             
         self.accept()
 
+    # [SỬA HÀM get_config]
     def get_config(self):
         return {
             "title": self.inp_title.text(),
             "time": self.inp_time.value(),
-            "questions": self.final_questions
+            "questions": self.final_questions,
+            "external_pdf": self.txt_pdf_path.text().strip() # <--- Thêm dòng này
         }
 
 class ExamMonitorDialog(QDialog):
@@ -6363,7 +6471,7 @@ class MainApp(QMainWindow):
         
         l.addWidget(self.stack)
         self.lbl_stat = QLabel("Ready"); l.addWidget(self.lbl_stat)
-        self.load_stats()
+        QTimer.singleShot(100, self.load_stats)
 
         # --- THÊM TIMER SCHEDULER ---
         self.scheduler_timer = QTimer(self)
@@ -6695,7 +6803,7 @@ class MainApp(QMainWindow):
         return w
 
     def quick_save_manual_exam(self):
-        """Lưu nhanh danh sách câu hỏi hiện tại ra file TeX (Không trộn, không cấu hình)"""
+        """Lưu nhanh danh sách câu hỏi hiện tại ra file TeX (Cấu trúc chuẩn như Classroom)"""
         # 1. Lấy dữ liệu từ Tree Widget
         questions = self.exam_lst.get_all_questions()
         
@@ -6708,23 +6816,57 @@ class MainApp(QMainWindow):
         if not path: return
 
         try:
-            # 3. Tạo nội dung (Ghép đơn giản)
-            content = [LATEX_TEMPLATE] # Header chuẩn
-            content.append("\\begin{center}\\textbf{ĐỀ THI ĐƯỢC CHỌN TỪ NGÂN HÀNG}\\end{center}")
-            content.append("\\setcounter{ex}{0}") # Reset đếm câu
+            # --- LOGIC MỚI: SẮP XẾP VÀ CHIA PHẦN ---
             
+            # 1. Sắp xếp theo Dạng (1->2->3->4)
+            sanitized_qs = []
             for q in questions:
-                content.append(q['content_tex'])
+                # Đảm bảo 'dang' luôn tồn tại, mặc định là 4 (Tự luận)
+                if 'dang' not in q: q['dang'] = 4
+                sanitized_qs.append(q)
             
-            content.append("\\end{document}") # Footer
+            sanitized_qs.sort(key=lambda x: x['dang'])
+
+            # 2. Chuẩn bị nội dung Body
+            body_content = [
+                r"\begin{center}\textbf{\Large ĐỀ THI ĐƯỢC CHỌN TỪ NGÂN HÀNG}\end{center}",
+                r"\setcounter{ex}{0}"
+            ]
+            
+            current_dang = None
+            section_titles = {
+                1: r"\section*{PHẦN I. Câu trắc nghiệm nhiều phương án lựa chọn.} \textbf{\textit{Thí sinh trả lời các câu sau. Mỗi câu hỏi thí sinh chỉ lựa chọn một phương án.}}",
+                2: r"\section*{PHẦN II. Câu trắc nghiệm đúng sai.} \textbf{\textit{Thí sinh trả lời các câu sau. Trong mỗi ý {\bfseries a)}, {\bfseries b)}, {\bfseries c)}, {\bfseries d)} ở mỗi câu, thí sinh chọn đúng hoặc sai.}}",
+                3: r"\section*{PHẦN III. Câu trắc nghiệm trả lời ngắn.} \textbf{\textit{Thí sinh trả lời các câu sau.}}",
+                4: r"\section*{PHẦN IV. Tự luận / Khác}"
+            }
+
+            for q in sanitized_qs:
+                dang = q['dang']
+                # Nếu chuyển sang dạng mới -> Thêm tiêu đề phần
+                if dang != current_dang:
+                    if dang in section_titles:
+                        body_content.append(r"\vspace{0.5cm}")
+                        body_content.append(section_titles[dang])
+                        body_content.append(r"\vspace{0.2cm}")
+                    current_dang = dang
+                
+                body_content.append(q.get('content_tex', ''))
+
+            # 3. Ghép vào Template
+            tex_body = "\n".join(body_content)
+            # LATEX_TEMPLATE có placeholder __CONTENT__
+            final_tex = LATEX_TEMPLATE.replace("__CONTENT__", tex_body)
 
             # 4. Ghi file
             with open(path, "w", encoding="utf-8") as f:
-                f.write("\n".join(content))
+                f.write(final_tex)
             
-            QMessageBox.information(self, "Thành công", f"Đã lưu file đề gốc tại:\n{path}")
+            QMessageBox.information(self, "Thành công", f"Đã lưu file đề gốc (Format chuẩn) tại:\n{path}")
             
         except Exception as e:
+            import traceback
+            traceback.print_exc()
             QMessageBox.critical(self, "Lỗi lưu file", str(e))
 
     def create_manual_tab(self):
@@ -7628,6 +7770,7 @@ class MainApp(QMainWindow):
                 final_qs = config['questions']
                 title = config['title']
                 duration = config['time']
+                ext_pdf = config.get('external_pdf', "")
 
                 # KHỞI ĐỘNG SERVER (NẾU CHƯA)
                 if not hasattr(self, 'web_thread'):
@@ -7642,7 +7785,7 @@ class MainApp(QMainWindow):
                 self.pd_prep.setWindowModality(Qt.WindowModality.WindowModal)
                 self.pd_prep.show()
 
-                self.prep_worker = ExamPreparerWorker(final_qs, title, duration)
+                self.prep_worker = ExamPreparerWorker(final_qs, title, duration, ext_pdf)
                 self.prep_worker.progress.connect(lambda s: self.pd_prep.setLabelText(s))
                 self.prep_worker.finished.connect(self.on_exam_prepared)
                 self.prep_worker.start()
