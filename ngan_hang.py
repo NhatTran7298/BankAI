@@ -920,35 +920,35 @@ class ExamPreparerWorker(QThread):
     progress = pyqtSignal(str) 
     finished = pyqtSignal(bool, dict)
 
-    # [CẬP NHẬT 1] Thêm tham số external_pdf vào hàm khởi tạo
-    def __init__(self, questions, title, duration=90, external_pdf=""):
+    def __init__(self, questions, title, duration=90, external_tex=None):
         super().__init__()
         self.questions = list(questions) 
         self.title = title
         self.duration = duration
-        self.external_pdf = external_pdf # Lưu đường dẫn file PDF ngoài
+        self.external_tex = external_tex
+
+    # (Hàm extract_latex_key bạn có thể xóa hoặc giữ nguyên, 
+    # vì bây giờ ta tin tưởng key từ Dialog gửi sang hơn)
 
     def run(self):
         try:
             self.progress.emit("Đang xử lý dữ liệu...")
             
-            # --- 1. SẮP XẾP VÀ CHUẨN BỊ DỮ LIỆU CÂU HỎI ---
+            # 1. Sắp xếp (Sort)
             sanitized_qs = []
             for q in self.questions:
-                # Đảm bảo 'dang' luôn tồn tại (Mặc định là 4 - Tự luận nếu thiếu)
+                # Đảm bảo 'dang' luôn tồn tại
                 q['dang'] = q.get('dang', 4)
                 sanitized_qs.append(q)
             
-            # Sắp xếp câu hỏi theo dạng (Trắc nghiệm -> Đ/S -> Điền khuyết -> Tự luận)
             sanitized_qs.sort(key=lambda x: x['dang'])
 
-            # Chuẩn bị nội dung LaTeX (Dùng khi không có file PDF ngoài)
+            # 2. Tạo nội dung & Matrix Key
             full_content = [
                 r"\begin{center}\textbf{\Large " + self.title + r"}\end{center}",
                 r"\setcounter{ex}{0}"
             ]
             
-            # Danh sách chứa đáp án để chấm điểm (exam_matrix)
             exam_data = []
             current_dang = None
             
@@ -961,10 +961,9 @@ class ExamPreparerWorker(QThread):
 
             for idx, q in enumerate(sanitized_qs):
                 dang = q['dang']
-                # Lấy nội dung LaTeX an toàn
+                # Lấy content an toàn
                 tex = q.get('content_tex', q.get('content', ''))
                 
-                # Thêm tiêu đề phần nếu chuyển sang dạng mới
                 if dang != current_dang:
                     if dang in section_titles:
                         full_content.append(r"\vspace{0.5cm}")
@@ -974,56 +973,49 @@ class ExamPreparerWorker(QThread):
                 
                 full_content.append(tex)
                 
-                # Lấy đáp án (Key) để chấm điểm
+                # [FIX LỖI KEY ERROR]
+                # Luôn dùng .get() và giá trị mặc định
                 final_key = q.get('key', '?')
+                
+                # Nếu key là None hoặc rỗng
                 if not final_key: final_key = "?"
                 
                 exam_data.append({
-                    "id": idx + 1,      # STT câu hỏi (1, 2, 3...)
-                    "type": dang,       # Dạng câu hỏi
-                    "key": final_key    # Đáp án đúng
+                    "id": idx + 1,
+                    "type": dang,
+                    "key": final_key
                 })
 
-            # --- 2. XỬ LÝ FILE PDF ---
-            import time
-            import shutil
+            # 3. Biên dịch PDF
+            self.progress.emit("Đang biên dịch PDF...")
             
-            # Tạo tên file ngẫu nhiên dựa trên thời gian
-            pdf_name = f"online_exam_{int(time.time())}"
-            
-            # Thư mục build (cache)
-            build_dir = os.path.join(os.path.expanduser("~"), ".bankai_build")
-            if not os.path.exists(build_dir): os.makedirs(build_dir)
-            
-            final_pdf_path = os.path.join(build_dir, f"{pdf_name}.pdf")
-
-            # [CẬP NHẬT 2] Kiểm tra: Nếu có PDF ngoài -> Copy vào. Nếu không -> Biên dịch LaTeX.
-            if self.external_pdf and os.path.exists(self.external_pdf):
-                self.progress.emit("Đang xử lý file PDF có sẵn...")
+            final_tex = ""
+            if self.external_tex and os.path.exists(self.external_tex):
+                # Nếu có file TeX riêng, đọc nội dung file đó
                 try:
-                    # Copy file PDF của bạn vào thư mục hệ thống và đổi tên chuẩn
-                    shutil.copy2(self.external_pdf, final_pdf_path)
+                    with open(self.external_tex, 'r', encoding='utf-8') as f:
+                        final_tex = f.read()
                 except Exception as e:
-                    self.finished.emit(False, {"error": f"Lỗi copy file PDF: {str(e)}"})
+                    self.finished.emit(False, {"error": f"Lỗi đọc file TeX: {e}"})
                     return
             else:
-                self.progress.emit("Đang biên dịch PDF từ LaTeX...")
+                # Nếu không, dùng nội dung tự sinh từ DB
                 tex_body = "\n".join(full_content)
                 final_tex = LATEX_TEMPLATE.replace("__CONTENT__", tex_body)
-                
-                msg, path = PDFCompiler.compile_tex_to_pdf(final_tex, pdf_name)
-                
-                if not path:
-                    self.finished.emit(False, {"error": msg})
-                    return
-                # path ở đây chính là final_pdf_path do PDFCompiler trả về
+            
+            import time
+            pdf_name = f"online_exam_{int(time.time())}"
+            msg, pdf_path = PDFCompiler.compile_tex_to_pdf(final_tex, pdf_name)
+            
+            if not pdf_path:
+                self.finished.emit(False, {"error": msg})
+                return
 
-            # --- 3. TRẢ KẾT QUẢ VỀ MAIN THREAD ---
             result_payload = {
                 "pdf_filename": f"{pdf_name}.pdf",
-                "exam_matrix": exam_data,       # Ma trận đáp án để chấm điểm
+                "exam_matrix": exam_data,
                 "title": self.title,
-                "duration": self.duration * 60  # Đổi sang giây
+                "duration": self.duration * 60
             }
             self.finished.emit(True, result_payload)
 
@@ -2818,6 +2810,129 @@ class ImageManagerDialog(QDialog):
             self.backend.conn.rollback()
             QMessageBox.critical(self, "Lỗi Update", f"Có lỗi xảy ra, đã hoàn tác: {e}")
 
+class ImageMappingDialog(QDialog):
+    """Hộp thoại map ảnh từ file TeX ngoài vào đường dẫn cục bộ"""
+    def __init__(self, image_names, default_dir, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("🔗 Liên kết Hình ảnh (External TeX)")
+        self.setMinimumSize(900, 600)
+        self.image_names = sorted(list(set(image_names))) # Unique names
+        self.default_dir = default_dir
+        self.mapping = {} # {filename: path}
+        
+        self.setup_ui()
+        # Tự động tìm trong thư mục chứa file TeX trước
+        self.auto_scan(self.default_dir)
+        
+    def setup_ui(self):
+        layout = QVBoxLayout(self)
+        
+        # Header
+        info = QLabel(f"⚠️ Phát hiện {len(self.image_names)} hình ảnh được nhúng trong file TeX.\n"
+                      "Vui lòng đảm bảo các đường dẫn ảnh là chính xác (đường dẫn tuyệt đối) để hệ thống có thể biên dịch.")
+        info.setStyleSheet("background: #fff3cd; color: #856404; padding: 10px; border-radius: 5px; font-weight: bold;")
+        layout.addWidget(info)
+        
+        # Table
+        self.table = QTableWidget(len(self.image_names), 3)
+        self.table.setHorizontalHeaderLabels(["Tên ảnh (Trong TeX)", "Đường dẫn thực tế trên máy", "Thao tác"])
+        self.table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
+        layout.addWidget(self.table)
+        
+        for i, name in enumerate(self.image_names):
+            self.table.setItem(i, 0, QTableWidgetItem(name))
+            
+            item_path = QTableWidgetItem("")
+            item_path.setForeground(QColor("red")) # Mặc định đỏ (chưa tìm thấy)
+            self.table.setItem(i, 1, item_path)
+            
+            btn = QPushButton("📂 Chọn file")
+            btn.setCursor(Qt.CursorShape.PointingHandCursor)
+            btn.clicked.connect(lambda _, r=i: self.browse_image(r))
+            self.table.setCellWidget(i, 2, btn)
+            
+        # Action Buttons
+        btn_box = QHBoxLayout()
+        btn_scan = QPushButton("🔄 Quét ảnh trong thư mục...")
+        btn_scan.clicked.connect(self.manual_scan)
+        
+        btn_ok = QPushButton("✅ Xác nhận & Cập nhật Link")
+        btn_ok.setProperty("class", "btn-primary")
+        btn_ok.clicked.connect(self.accept)
+        
+        btn_cancel = QPushButton("Bỏ qua (Giữ nguyên)")
+        btn_cancel.clicked.connect(self.reject)
+        
+        btn_box.addWidget(btn_scan)
+        btn_box.addStretch()
+        btn_box.addWidget(btn_ok)
+        btn_box.addWidget(btn_cancel)
+        layout.addLayout(btn_box)
+
+    def auto_scan(self, directory):
+        """Tự động tìm ảnh trong thư mục và điền vào bảng"""
+        if not directory or not os.path.exists(directory): return
+        
+        # Tạo map {filename: fullpath} trong folder (quét đệ quy nhẹ)
+        files_in_dir = {}
+        try:
+            # Chỉ quét 1 cấp thư mục để tránh treo nếu folder quá lớn, hoặc dùng os.listdir
+            for f in os.listdir(directory):
+                full = os.path.join(directory, f)
+                if os.path.isfile(full):
+                    files_in_dir[f] = full
+        except: pass
+        
+        # Điền vào bảng
+        count_found = 0
+        for i in range(self.table.rowCount()):
+            name_in_tex = self.table.item(i, 0).text()
+            
+            # Logic 1: Nếu tên trong TeX là đường dẫn tuyệt đối và tồn tại -> OK
+            if os.path.isabs(name_in_tex) and os.path.exists(name_in_tex):
+                 self.set_path(i, name_in_tex)
+                 count_found += 1
+                 continue
+
+            # Logic 2: Lấy tên file (basename) để đối chiếu
+            basename = os.path.basename(name_in_tex)
+            
+            # Nếu tìm thấy trong folder hiện tại
+            if basename in files_in_dir:
+                self.set_path(i, files_in_dir[basename])
+                count_found += 1
+            # Logic 3: Thử check đường dẫn tương đối
+            else:
+                 candidate = os.path.join(directory, name_in_tex)
+                 if os.path.exists(candidate):
+                     self.set_path(i, candidate)
+                     count_found += 1
+
+    def manual_scan(self):
+        d = QFileDialog.getExistingDirectory(self, "Chọn thư mục chứa ảnh")
+        if d: self.auto_scan(d)
+
+    def browse_image(self, row):
+        name = self.table.item(row, 0).text()
+        f, _ = QFileDialog.getOpenFileName(self, f"Tìm ảnh: {name}", self.default_dir, "Images (*.png *.jpg *.jpeg *.pdf *.eps)")
+        if f:
+            self.set_path(row, f)
+
+    def set_path(self, row, path):
+        path = path.replace("\\", "/") # Chuẩn hóa path cho LaTeX
+        self.table.setItem(row, 1, QTableWidgetItem(path))
+        self.table.item(row, 1).setToolTip(path)
+        self.table.item(row, 1).setForeground(QColor("green")) # Đổi màu xanh
+
+    def accept(self):
+        # Collect data
+        for i in range(self.table.rowCount()):
+            name = self.table.item(i, 0).text()
+            path = self.table.item(i, 1).text()
+            if path and os.path.exists(path):
+                self.mapping[name] = path
+        super().accept()
+
 # =============================================================================
 # 7. MAIN APP
 # =============================================================================
@@ -4555,8 +4670,6 @@ import os
 import socket
 
 # --- CẬP NHẬT: WEB SERVER THREAD (FIX LỖI GMAIL CÁ NHÂN) ---
-# Tìm class WebServerThread và thay thế toàn bộ bằng đoạn này:
-
 class WebServerThread(QThread):
     students_changed = pyqtSignal(list)
     server_ready = pyqtSignal(str)
@@ -4567,25 +4680,29 @@ class WebServerThread(QThread):
         self.db_path = db_path
         self.port = 8080
         
-        # Token Ngrok của bạn
+        # [QUAN TRỌNG] Nhớ điền Token thật của bạn vào đây
+        # Ví dụ: self.ngrok_auth_token = "2Alk..."
         self.ngrok_auth_token = "38b8oxhy3hT98ZoeqO7kl8RJaJP_axFQ8v4mjEtV5EvSwLzb"
         
         self.public_url = ""
+        
+        # [ĐÃ SỬA] Thêm lại dòng này để tránh lỗi Attribute Error
         self.ip_address = "0.0.0.0" 
+        
         self.gg_sync = None 
         
-        # Biến lưu trữ dữ liệu đề thi tạm thời
-        self.current_exam_data = {} 
-
         # Thư mục chứa các file đề thi riêng biệt
         self.exam_dir = os.path.join(os.path.expanduser("~"), ".bankai_exams")
         if not os.path.exists(self.exam_dir): os.makedirs(self.exam_dir)
 
-    # [FIX LỖI QUAN TRỌNG] THÊM HÀM NÀY VÀO
     def set_exam_data(self, data):
-        """Nhận dữ liệu đề thi từ MainApp"""
-        self.current_exam_data = data
-    # ------------------------------------------------
+        """Lưu dữ liệu đề thi hiện tại vào thread để server sử dụng"""
+        self.exam_data = data
+        self.exam_id = data.get('examId', 'default')
+        # Lưu file để persist
+        if 'examId' in data:
+            self.save_exam_file(self.exam_id, data)
+        print(f"✅ Server loaded exam data: {self.exam_id}")
 
     def save_exam_file(self, exam_id, data):
         """Lưu đề thi thành file riêng biệt"""
@@ -4601,28 +4718,9 @@ class WebServerThread(QThread):
             with open(filepath, "r", encoding="utf-8") as f:
                 return json.load(f)
         return None
-    
-    # Hàm phát đề cho danh sách học sinh (được gọi từ Monitor Dialog)
-    def distribute_exam(self, target_ids):
-        # Lấy exam_id từ dữ liệu hiện tại (được set trong on_exam_prepared)
-        if not self.current_exam_data or 'examId' not in self.current_exam_data:
-            print("❌ Chưa có ID đề thi để phát!")
-            return
-
-        exam_data = self.load_exam_file(self.current_exam_data['examId'])
-        if exam_data:
-            # Gửi tín hiệu phát đề qua WebSocket Manager
-            # Lưu ý: Cần chạy async trong luồng riêng hoặc dùng asyncio.run_coroutine_threadsafe
-            # Nhưng ở đây ta dùng mẹo: Manager là biến toàn cục
-            import asyncio
-            loop = asyncio.new_event_loop()
-            asyncio.set_event_loop(loop)
-            loop.run_until_complete(manager.broadcast_exam(exam_data, target_ids))
-            loop.close()
-            print(f"🚀 Đã phát đề cho {len(target_ids)} học sinh.")
 
     def sync_score(self, exam_data, name, email, score):
-        """Đồng bộ điểm lên Google Classroom"""
+        """Đồng bộ điểm lên Google Classroom (Cần dữ liệu của đúng đề đó)"""
         cid = exam_data.get('courseId')
         cwid = exam_data.get('courseWorkId')
         if not cid or not cwid: return
@@ -4634,6 +4732,7 @@ class WebServerThread(QThread):
         try:
             print(f"🔄 Đang đồng bộ điểm cho đề {exam_data.get('title')}...")
             service = self.gg_sync.service_class
+            # ... (Giữ nguyên logic tìm HS và chấm điểm như cũ) ...
             students = service.courses().students().list(courseId=cid).execute().get('students', [])
             user_id = None
             target_email = email.strip().lower()
@@ -4664,8 +4763,10 @@ class WebServerThread(QThread):
         app = FastAPI()
         app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_credentials=True, allow_methods=["*"], allow_headers=["*"])
 
+        # URL ĐỘNG: /exam/{exam_id} -> Trả về giao diện thi
         @app.get("/exam/{exam_id}")
         async def get_exam_ui(exam_id: str):
+            # Kiểm tra xem đề có tồn tại không
             if self.load_exam_file(exam_id):
                 return HTMLResponse(content=WEB_UI_TEMPLATE)
             return HTMLResponse(content="<h1>❌ Đề thi không tồn tại hoặc đã bị xóa!</h1>")
@@ -4684,16 +4785,11 @@ class WebServerThread(QThread):
                     
                     if data.get('type') == 'JOIN':
                         exam_id = data.get('exam_id')
-                        # Load đề thi từ file dựa trên ID học sinh gửi lên
                         exam_data = self.load_exam_file(exam_id)
                         
                         if exam_data:
-                            # Đăng ký vào manager
-                            manager.register(websocket, data['id'], f"{data['name']}")
-                            # Gửi tín hiệu về UI MainApp để cập nhật danh sách
-                            self.students_changed.emit(manager.get_list())
-                            
-                            # Gửi đề thi cho học sinh
+                            manager.register(websocket, data['id'], f"{data['name']} [{exam_id}]")
+                            # Gửi đúng đề thi đó cho học sinh
                             await websocket.send_json({"type": "START_EXAM", "data": exam_data})
                         else:
                             await websocket.send_json({"type": "ERROR", "message": "Không tìm thấy dữ liệu đề thi!"})
@@ -4702,27 +4798,19 @@ class WebServerThread(QThread):
                         exam_id = data.get('exam_id')
                         exam_data = self.load_exam_file(exam_id)
                         if exam_data:
+                            # Lưu kết quả
                             try:
                                 conn = sqlite3.connect(self.db_path)
                                 conn.execute("INSERT INTO exam_results (student_name, exam_title, score, detail) VALUES (?, ?, ?, ?)",
                                     (f"{data['name']} ({data['email']})", exam_data.get('title'), data['score'], json.dumps(data['detail'])))
                                 conn.commit(); conn.close()
-                                
-                                # Gửi tín hiệu về UI MainApp
-                                self.result_received.emit(f"{data['name']}", float(data['score']))
-                                # Cập nhật danh sách (để hiện trạng thái đã nộp)
-                                self.students_changed.emit(manager.get_list())
+                                self.result_received.emit(f"{data['name']} - {exam_data.get('title')}", float(data['score']))
                                 
                                 # Đồng bộ Classroom
                                 self.sync_score(exam_data, data['name'], data['email'], data['score'])
                             except: pass
 
-            except WebSocketDisconnect:
-                # Xử lý khi học sinh thoát
-                # (Cần logic remove trong Manager, ở đây ta đơn giản là emit lại list)
-                self.students_changed.emit(manager.get_list())
-            except Exception as e:
-                print(f"WS Error: {e}")
+            except: pass
 
         # Kết nối Ngrok
         MY_DOMAIN = "oncologic-premeditative-nada.ngrok-free.dev"
@@ -5562,6 +5650,7 @@ class ExamConfigDialog(QDialog):
         self.resize(1100, 650)
         self.questions = questions 
         self.final_questions = []
+        self.tex_path = ""
         
         layout = QVBoxLayout(self)
 
@@ -5573,17 +5662,19 @@ class ExamConfigDialog(QDialog):
         gl.addWidget(QLabel("Thời gian (phút):"), 0, 2)
         self.inp_time = QSpinBox(); self.inp_time.setRange(5, 300); self.inp_time.setValue(90)
         gl.addWidget(self.inp_time, 0, 3)
-        layout.addWidget(grp_info)
 
-        # [THÊM ĐOẠN NÀY VÀO SAU Ô NHẬP THỜI GIAN]
-        gl.addWidget(QLabel("File PDF riêng (nếu có):"), 1, 0)
-        self.txt_pdf_path = QLineEdit()
-        self.txt_pdf_path.setPlaceholderText("Để trống nếu muốn App tự sinh đề...")
-        btn_browse = QPushButton("📂 Chọn")
-        btn_browse.clicked.connect(self.browse_pdf)
-        gl.addWidget(self.txt_pdf_path, 1, 1, 1, 2)
+        # [NEW] Chọn file TeX
+        gl.addWidget(QLabel("File TeX riêng (nếu có):"), 1, 0)
+        self.txt_tex_path = QLineEdit()
+        self.txt_tex_path.setPlaceholderText("Chọn file .tex để biên dịch PDF thay vì tạo tự động...")
+        self.txt_tex_path.setReadOnly(True)
+        gl.addWidget(self.txt_tex_path, 1, 1, 1, 2)
+        
+        btn_browse = QPushButton("Chọn File")
+        btn_browse.clicked.connect(self.browse_tex)
         gl.addWidget(btn_browse, 1, 3)
-        # [KẾT THÚC THÊM]
+
+        layout.addWidget(grp_info)
 
         # --- PHẦN 2: BẢNG SOÁT ---
         self.table = QTableWidget()
@@ -5600,11 +5691,6 @@ class ExamConfigDialog(QDialog):
         btns.accepted.connect(self.accept_data)
         btns.rejected.connect(self.reject)
         layout.addWidget(btns)
-
-    # [THÊM HÀM NÀY VÀO TRONG CLASS]
-    def browse_pdf(self):
-        f, _ = QFileDialog.getOpenFileName(self, "Chọn File PDF", "", "PDF Files (*.pdf)")
-        if f: self.txt_pdf_path.setText(f)
 
     def load_data(self):
         self.table.setRowCount(len(self.questions))
@@ -5752,13 +5838,18 @@ class ExamConfigDialog(QDialog):
             
         self.accept()
 
-    # [SỬA HÀM get_config]
+    def browse_tex(self):
+        f, _ = QFileDialog.getOpenFileName(self, "Chọn file TeX", "", "TeX Files (*.tex)")
+        if f:
+            self.tex_path = f
+            self.txt_tex_path.setText(f)
+
     def get_config(self):
         return {
             "title": self.inp_title.text(),
             "time": self.inp_time.value(),
             "questions": self.final_questions,
-            "external_pdf": self.txt_pdf_path.text().strip() # <--- Thêm dòng này
+            "external_tex": self.tex_path
         }
 
 class ExamMonitorDialog(QDialog):
@@ -5951,8 +6042,14 @@ class MatrixEditorDialog(QDialog):
         self.mat_tb = QTableWidget()
         self.mat_tb.setColumnCount(10)
         self.mat_tb.setHorizontalHeaderLabels(["Nội dung", "I.NB", "I.TH", "I.VD", "II.NB", "II.TH", "II.VD", "III.NB", "III.TH", "III.VD"])
-        self.mat_tb.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
-        for i in range(1, 10): self.mat_tb.setColumnWidth(i, 45)
+        
+        # [FIX] Cấu hình cột: Cột 0 giãn, Cột 1-9 cố định kích thước (45px)
+        header = self.mat_tb.horizontalHeader()
+        header.setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
+        for i in range(1, 10):
+            header.setSectionResizeMode(i, QHeaderView.ResizeMode.Fixed)
+            self.mat_tb.setColumnWidth(i, 45)
+            
         self.mat_tb.verticalHeader().setVisible(False)
         left_layout.addWidget(self.mat_tb)
         
@@ -5994,7 +6091,7 @@ class MatrixEditorDialog(QDialog):
         
         gb_res_layout.addWidget(QLabel("<b>Xem trước Code LaTeX:</b>"))
         self.preview_txt = QTextEdit()
-        self.preview_txt.setMaximumHeight(200)
+        self.preview_txt.setFixedHeight(150) # Fix height as requested
         self.preview_txt.setReadOnly(True)
         gb_res_layout.addWidget(self.preview_txt)
         
@@ -6011,8 +6108,35 @@ class MatrixEditorDialog(QDialog):
         right_layout.addLayout(footer)
         
         splitter.addWidget(left_panel); splitter.addWidget(right_panel)
-        splitter.setStretchFactor(0, 1); splitter.setStretchFactor(1, 1)
+        
+        # Adjust Splitter Sizes (Left larger)
+        splitter.setStretchFactor(0, 2) 
+        splitter.setStretchFactor(1, 1)
+        
         main_layout.addWidget(splitter)
+
+    def _get_display_label(self, q, idx):
+        """Helper visual formatting for question list item"""
+        subj_map = {'D': 'Đại', 'H': 'Hình'}
+        dang_map = {1: 'TN', 2: 'Đ/S', 3: 'TLN', 4: 'TL'}
+        
+        g = q.get('grade', '?')
+        s_code = q.get('subject', '')
+        s = subj_map.get(s_code, s_code)
+        
+        ch = q.get('chapter', '?')
+        bai = q.get('bai', '?')
+        lev = q.get('level', '?')
+        d_code = q.get('dang', 4)
+        d_str = dang_map.get(d_code, 'TL')
+        
+        content = q.get('content_tex', '')
+        # Truncate content nicely
+        content_clean = content.replace("\n", " ").strip()
+        if len(content_clean) > 80:
+            content_clean = content_clean[:80] + "..."
+            
+        return f"Câu {idx}: [{g}-{s}] [C{ch}.B{bai}] [{lev}] [{d_str}] - {content_clean}"
 
     # --- LOGIC MA TRẬN (ĐÃ FIX LỖI TÊN HÀM) ---
     def upd_mat(self):
@@ -6147,7 +6271,10 @@ class MatrixEditorDialog(QDialog):
     def add_q_to_list(self, q):
         self.final_questions.append(q)
         idx = self.res_list.count() + 1
-        txt = f"Câu {idx}: [ID:{q['id']}] {q.get('level')} | {q['content_tex'][:50]}..."
+        
+        # Use helper for display text
+        txt = self._get_display_label(q, idx)
+        
         item = QListWidgetItem(txt)
         item.setData(Qt.ItemDataRole.UserRole, q)
         
@@ -6177,7 +6304,11 @@ class MatrixEditorDialog(QDialog):
         if new_q:
             item.setData(Qt.ItemDataRole.UserRole, new_q)
             idx = self.res_list.row(item)
-            item.setText(f"Câu {idx+1}: [ID:{new_q['id']}] {new_q.get('level')} | {new_q['content_tex'][:50]}...")
+            
+            # Use helper to update text
+            new_txt = self._get_display_label(new_q, idx + 1)
+            item.setText(new_txt)
+            
             self.preview_txt.setText(new_q['content_tex'])
             self.final_questions[idx] = new_q
             QMessageBox.information(self, "Xong", f"Đã đổi sang câu ID: {new_q['id']}")
@@ -7728,38 +7859,87 @@ class MainApp(QMainWindow):
         dlg.exec()
 
     # Trong class MainApp
+    def resolve_external_images(self, questions, tex_path):
+        """Hàm helper: Quét và map lại đường dẫn ảnh cho file TeX ngoài"""
+        all_imgs = set()
+        for q in questions:
+            content = q.get('content_tex', '')
+            # Regex tìm \includegraphics{...} hoặc \includegraphics[...]{...}
+            matches = re.findall(r"\\includegraphics(?:\[.*?\])?\{(.*?)\}", content)
+            for m in matches:
+                all_imgs.add(m.strip())
+        
+        if not all_imgs: return questions
+
+        # Mở Dialog để user confirm (luôn mở nếu có ảnh để đảm bảo tính đúng đắn)
+        tex_dir = os.path.dirname(tex_path)
+        dlg = ImageMappingDialog(list(all_imgs), tex_dir, self)
+        
+        if dlg.exec() == QDialog.DialogCode.Accepted:
+            final_map = dlg.mapping
+            # Update questions
+            for q in questions:
+                # Chỉ update những câu có chứa ảnh đã được map
+                # (Duyệt qua map để replace)
+                content = q.get('content_tex', '')
+                for img_name, abs_path in final_map.items():
+                    # Pattern: \includegraphics[...]{img_name} hoặc \includegraphics{img_name}
+                    pattern = r"(\\includegraphics(?:\[.*?\])?)\{" + re.escape(img_name) + r"\}"
+                    if re.search(pattern, content):
+                        content = re.sub(pattern, r"\1{" + abs_path + "}", content)
+                q['content_tex'] = content
+        
+        return questions
+
     def toggle_web_server(self):
         """Bật/Tắt Web Server - Fix lỗi tự chạy khi chưa bấm OK"""
         if self.btn_web.isChecked():
-            # 1. LẤY DỮ LIỆU TỪ TAB ĐANG MỞ
+            # TẠO MENU LỰA CHỌN NGUỒN ĐỀ
+            menu = QMenu(self)
+            menu.setStyleSheet("QMenu { font-size: 14px; padding: 5px; } QMenu::item { padding: 10px 20px; }")
+            
+            act_sys = menu.addAction("1. Lấy đề từ hệ thống (Tab hiện tại)")
+            act_ext = menu.addAction("2. Lấy đề từ bên ngoài (File TeX)")
+            
+            # Hiển thị menu ngay dưới nút bấm
+            action = menu.exec(self.btn_web.mapToGlobal(QPoint(0, self.btn_web.height())))
+            
             questions = []
-            source_name = ""
-            current_idx = self.stack.currentIndex()
+            
+            if action == act_sys:
+                # 1. LẤY DỮ LIỆU TỪ TAB ĐANG MỞ
+                questions, src = self.get_current_exam_questions()
+                if not questions:
+                    self.btn_web.setChecked(False)
+                    QMessageBox.warning(self, "Chưa có câu hỏi", 
+                        f"Tab '{src}' chưa có dữ liệu.\nVui lòng tạo đề trước khi bật thi Online.")
+                    return
 
-            if current_idx == 1: # Thủ công
-                if hasattr(self.exam_lst, 'get_all_questions'):
-                    questions = self.exam_lst.get_all_questions()
-                source_name = "Soạn Thủ Công"
-            elif current_idx == 2: # Ma trận
-                if hasattr(self, 'current_exam') and self.current_exam:
-                    questions = self.current_exam
-                source_name = "Ma Trận"
-            elif current_idx == 3: # AI
-                if hasattr(self, 'gen_res') and self.gen_res:
-                    first_code = list(self.gen_res.keys())[0]
-                    raw_qs = self.gen_res[first_code]
-                    for q in raw_qs:
-                        questions.append({
-                            'content_tex': q['content'],
-                            'key': q.get('key', '?'),
-                            'dang': 1 if r'\choice' in q['content'] else (2 if r'\choiceTF' in q['content'] else 3)
-                        })
-                source_name = "AI Generator"
-
-            if not questions:
+            elif action == act_ext:
+                # 2. LẤY TỪ FILE BÊN NGOÀI
+                path, _ = QFileDialog.getOpenFileName(self, "Chọn file TeX đề thi", "", "TeX Files (*.tex)")
+                if path:
+                    # Parse file để lấy câu hỏi và đáp án
+                    try:
+                        parsed_qs, _ = self.bk.analyze_tex_file(path)
+                        if parsed_qs:
+                            # [MỚI] Xử lý link ảnh
+                            questions = self.resolve_external_images(parsed_qs, path)
+                            QMessageBox.information(self, "Đã đọc file", f"Đã tìm thấy {len(questions)} câu hỏi từ file.")
+                        else:
+                            self.btn_web.setChecked(False)
+                            QMessageBox.warning(self, "Lỗi", "Không tìm thấy câu hỏi nào trong file (cần có môi trường ex/bt)!")
+                            return
+                    except Exception as e:
+                        self.btn_web.setChecked(False)
+                        QMessageBox.critical(self, "Lỗi đọc file", str(e))
+                        return
+                else:
+                    self.btn_web.setChecked(False)
+                    return
+            else:
+                # Hủy bỏ (click ra ngoài)
                 self.btn_web.setChecked(False)
-                QMessageBox.warning(self, "Chưa có câu hỏi", 
-                    f"Tab '{source_name}' chưa có dữ liệu.\nVui lòng tạo đề trước khi bật thi Online.")
                 return
 
             # [FIX QUAN TRỌNG] CHỈ CHẠY TIẾP KHI NGƯỜI DÙNG BẤM OK
@@ -7770,7 +7950,7 @@ class MainApp(QMainWindow):
                 final_qs = config['questions']
                 title = config['title']
                 duration = config['time']
-                ext_pdf = config.get('external_pdf', "")
+                ext_tex = config.get('external_tex')
 
                 # KHỞI ĐỘNG SERVER (NẾU CHƯA)
                 if not hasattr(self, 'web_thread'):
@@ -7785,7 +7965,7 @@ class MainApp(QMainWindow):
                 self.pd_prep.setWindowModality(Qt.WindowModality.WindowModal)
                 self.pd_prep.show()
 
-                self.prep_worker = ExamPreparerWorker(final_qs, title, duration, ext_pdf)
+                self.prep_worker = ExamPreparerWorker(final_qs, title, duration, ext_tex)
                 self.prep_worker.progress.connect(lambda s: self.pd_prep.setLabelText(s))
                 self.prep_worker.finished.connect(self.on_exam_prepared)
                 self.prep_worker.start()
@@ -7982,9 +8162,57 @@ class MainApp(QMainWindow):
             self.create_online_classroom_exam() # Hàm mới bên dưới
 
     def create_online_classroom_exam(self):
-        # 1. Lấy dữ liệu câu hỏi
-        questions, source = self.get_current_exam_questions()
-        if not questions: return QMessageBox.warning(self, "Lỗi", "Chưa có câu hỏi!")
+        # TẠO MENU LỰA CHỌN NGUỒN ĐỀ
+        menu = QMenu(self)
+        menu.setStyleSheet("QMenu { font-size: 14px; padding: 5px; } QMenu::item { padding: 10px 20px; }")
+        
+        act_sys = menu.addAction("1. Lấy đề từ hệ thống (Tab hiện tại)")
+        act_ext = menu.addAction("2. Lấy đề từ bên ngoài (File TeX)")
+        
+        # Hiển thị menu ngay tại vị trí con trỏ chuột
+        action = menu.exec(QCursor.pos())
+        
+        questions = []
+        
+        if action == act_sys:
+            # 1. LẤY DỮ LIỆU TỪ TAB ĐANG MỞ
+            questions, src = self.get_current_exam_questions()
+            if not questions:
+                return QMessageBox.warning(self, "Chưa có câu hỏi", 
+                    f"Tab '{src}' chưa có dữ liệu.\nVui lòng tạo đề trước khi bật thi Online.")
+
+        elif action == act_ext:
+            # 2. LẤY TỪ FILE BÊN NGOÀI
+            path, _ = QFileDialog.getOpenFileName(self, "Chọn file TeX đề thi", "", "TeX Files (*.tex)")
+            if path:
+                # Parse file để lấy câu hỏi và đáp án
+                try:
+                    parsed_qs, _ = self.bk.analyze_tex_file(path)
+                    if parsed_qs:
+                        # [MỚI] Xử lý link ảnh
+                        parsed_qs = self.resolve_external_images(parsed_qs, path)
+                        
+                        # Preprocess: Loại bỏ trích dẫn nguồn đề sau số câu
+                        # Regex tìm: \begin{ex}[...] -> \begin{ex}
+                        import re
+                        for q in parsed_qs:
+                            if 'content_tex' in q:
+                                # Xóa optional argument của ex/bt/vd
+                                q['content_tex'] = re.sub(r"(\\begin\s*\{(?:ex|bt|vd)\})\s*\[.*?\]", r"\1", q['content_tex'], flags=re.DOTALL)
+                        
+                        questions = parsed_qs
+                        QMessageBox.information(self, "Đã đọc file", f"Đã tìm thấy {len(questions)} câu hỏi từ file.\n(Đã tự động ẩn trích dẫn nguồn đề)")
+                    else:
+                        QMessageBox.warning(self, "Lỗi", "Không tìm thấy câu hỏi nào trong file (cần có môi trường ex/bt)!")
+                        return
+                except Exception as e:
+                    QMessageBox.critical(self, "Lỗi đọc file", str(e))
+                    return
+            else:
+                return
+        else:
+            # Hủy bỏ (click ra ngoài)
+            return
 
         # 2. Hộp thoại Cấu hình thi (Thời gian, Tiêu đề)
         dlg = ExamConfigDialog(questions, self)
@@ -8015,7 +8243,7 @@ class MainApp(QMainWindow):
                 # Khởi tạo Server nếu chưa có
                 if not hasattr(self, 'web_thread'): self.web_thread = WebServerThread(DB_PATH)
                 
-                # Chạy Worker biên dịch PDF
+                # Chạy Worker biên dịch PDF (Không truyền external_tex để dùng Main hệ thống)
                 self.prep_worker = ExamPreparerWorker(config['questions'], exam_title, config['time'])
                 
                 # --- HÀM XỬ LÝ KHI PDF ĐÃ SẴN SÀNG ---
