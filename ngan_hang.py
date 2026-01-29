@@ -344,7 +344,7 @@ QMainWindow {
     background-color: #f4f6f9;
 }
 QWidget {
-    font-family: 'Segoe UI', Arial, sans-serif;
+    font-family: Arial, sans-serif;
     font-size: 14px;
     color: #2c3e50;
 }
@@ -1486,6 +1486,33 @@ class GoogleManagerFull:
             raise e
 
     # --- CÁC HÀM CŨ (QUAN TRỌNG) ---
+    def get_students(self, course_id):
+        """Lấy danh sách học sinh trong lớp"""
+        students = []
+        try:
+            page_token = None
+            while True:
+                response = self.service_class.courses().students().list(
+                    courseId=course_id,
+                    pageToken=page_token,
+                    pageSize=100
+                ).execute()
+
+                for s in response.get('students', []):
+                    profile = s.get('profile', {})
+                    students.append({
+                        'name': profile.get('name', {}).get('fullName', 'Unknown'),
+                        'email': profile.get('emailAddress', ''),
+                        'id': profile.get('id', '')
+                    })
+
+                page_token = response.get('nextPageToken', None)
+                if not page_token:
+                    break
+        except Exception as e:
+            print(f"Lỗi lấy danh sách học sinh: {e}")
+        return students
+
     def get_courses(self):
         """Lấy danh sách lớp học đang hoạt động"""
         results = self.service_class.courses().list(courseStates=['ACTIVE']).execute()
@@ -1850,7 +1877,6 @@ class ModernSidebar(QWidget):
                 background-color: #ED840D; /* Original Brand Color */
                 color: white;
                 font-weight: bold;
-                box-shadow: 0 4px 6px rgba(237, 132, 13, 0.3);
             }
             QLabel {
                 color: #95a5a6; font-weight: bold; font-size: 11px;
@@ -3765,7 +3791,7 @@ class TemplateLibraryDialog(QDialog):
         
         # Header
         header = QLabel("📋 THƯ VIỆN CẤU TRÚC ĐỀ THI 2025")
-        header.setFont(QFont("Segoe UI", 16, QFont.Weight.Bold))
+        header.setFont(QFont("Arial", 16, QFont.Weight.Bold))
         header.setStyleSheet("color: #c0392b; padding: 10px; text-transform: uppercase;")
         header.setAlignment(Qt.AlignmentFlag.AlignCenter)
         layout.addWidget(header)
@@ -6953,9 +6979,9 @@ class MainApp(QMainWindow):
         self.stack.addWidget(self.create_manual_tab()) # Index 1
         self.stack.addWidget(self.create_matrix_tab()) # Index 2
         self.stack.addWidget(self.create_ai_tab())     # Index 3
-
-        content_layout.addWidget(self.stack)
         
+        content_layout.addWidget(self.stack)
+
         self.lbl_stat = QLabel(" Ready");
         self.lbl_stat.setStyleSheet("background: #f0f0f0; padding: 5px; color: #555;")
         content_layout.addWidget(self.lbl_stat)
@@ -7050,7 +7076,7 @@ class MainApp(QMainWindow):
         lbl_text = QLabel("BANKAI PRO 2025")
         lbl_text.setStyleSheet("""
             font-size: 20px; font-weight: 900; color: #ffffff; letter-spacing: 1px; 
-            background: transparent; border: none; font-family: 'Segoe UI', Arial, sans-serif;
+            background: transparent; border: none; font-family: Arial, sans-serif;
         """)
         brand_box.addWidget(lbl_logo); brand_box.addWidget(lbl_text)
         layout.addLayout(brand_box)
@@ -8619,6 +8645,15 @@ class MainApp(QMainWindow):
                     # Lưu thông tin lớp học vào data để dùng cho việc chấm điểm sau này
                     data['courseId'] = course_id
                     
+                    # [MỚI] Fetch danh sách học sinh để inject vào Web UI
+                    try:
+                        gg = GoogleManagerFull(); gg.authenticate()
+                        data['students'] = gg.get_students(course_id)
+                        print(f"Đã tải {len(data['students'])} học sinh vào đề thi.")
+                    except Exception as e:
+                        print(f"Lỗi tải danh sách học sinh: {e}")
+                        data['students'] = []
+
                     # --- HÀM XỬ LÝ KHI SERVER ĐÃ ONLINE ---
                     def on_server_online(public_url):
                         if not public_url: 
