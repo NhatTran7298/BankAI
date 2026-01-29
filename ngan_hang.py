@@ -805,7 +805,7 @@ class AIEngine:
             }
             self.generation_config = genai.types.GenerationConfig(temperature=0.25, max_output_tokens=8192)
             self.model = genai.GenerativeModel(
-                model_name='gemini-2.5-flash',  # Cập nhật model mới nhất
+                model_name='gemini-1.5-flash',  # Cập nhật model mới nhất
                 safety_settings=safety_settings,
                 generation_config=self.generation_config
             )
@@ -1170,8 +1170,17 @@ class AutoIDWorker(QThread):
             try:
                 # Gọi AI
                 response = self.ai.model.generate_content(prompt)
-                txt = response.text.strip().replace("```json", "").replace("```", "")
-                data = json.loads(txt)
+                txt = response.text.strip()
+
+                # [FIX] Robust parsing: Try to find JSON object structure
+                match = re.search(r"\{.*\}", txt, re.DOTALL)
+                if match:
+                    json_str = match.group(0)
+                    data = json.loads(json_str)
+                else:
+                    # Fallback: try raw cleaning
+                    clean_txt = txt.replace("```json", "").replace("```", "").strip()
+                    data = json.loads(clean_txt)
                 
                 # Gửi kết quả về UI
                 self.item_finished.emit(idx, data)
@@ -1181,6 +1190,7 @@ class AutoIDWorker(QThread):
                 
             except Exception as e:
                 print(f"Lỗi AI câu {idx}: {e}")
+                # print(f"Raw response: {txt if 'txt' in locals() else 'None'}")
         
         self.finished.emit()
 
