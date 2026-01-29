@@ -916,13 +916,86 @@ class AIEngine:
 # 3. BACKGROUND WORKERS
 # =============================================================================
 
+class AssignmentUploadWorker(QThread):
+    progress = pyqtSignal(str)
+    finished = pyqtSignal(bool, str)
+
+    def __init__(self, questions, title, description, course_id, google_mgr):
+        super().__init__()
+        self.questions = questions
+        self.title = title
+        self.description = description
+        self.course_id = course_id
+        self.google_mgr = google_mgr
+
+    def run(self):
+        try:
+            self.progress.emit("Đang biên soạn nội dung PDF...")
+
+            # 1. Generate TeX Body
+            body_content = [
+                r"\begin{center}\textbf{\Large " + self.title + r"}\end{center}",
+                r"\setcounter{ex}{0}"
+            ]
+
+            # Simple sorting/grouping similar to ExamPreparerWorker
+            sanitized_qs = []
+            for q in self.questions:
+                if 'dang' not in q: q['dang'] = 4
+                sanitized_qs.append(q)
+            sanitized_qs.sort(key=lambda x: x['dang'])
+
+            current_dang = None
+            section_titles = {
+                1: r"\section*{PHẦN I. Câu trắc nghiệm nhiều phương án lựa chọn.}",
+                2: r"\section*{PHẦN II. Câu trắc nghiệm đúng sai.}",
+                3: r"\section*{PHẦN III. Câu trắc nghiệm trả lời ngắn.}",
+                4: r"\section*{PHẦN IV. Tự luận / Khác}"
+            }
+
+            for q in sanitized_qs:
+                dang = q['dang']
+                if dang != current_dang:
+                    if dang in section_titles:
+                        body_content.append(r"\vspace{0.5cm}" + section_titles[dang] + r"\vspace{0.2cm}")
+                    current_dang = dang
+                body_content.append(q.get('content_tex', ''))
+
+            tex_body = "\n".join(body_content)
+            final_tex = LATEX_TEMPLATE.replace("__CONTENT__", tex_body)
+
+            # 2. Compile PDF
+            self.progress.emit("Đang biên dịch PDF (LaTeX)...")
+            import time
+            pdf_name = f"homework_{int(time.time())}"
+            msg, pdf_path = PDFCompiler.compile_tex_to_pdf(final_tex, pdf_name)
+
+            if not pdf_path:
+                self.finished.emit(False, f"Lỗi biên dịch: {msg}")
+                return
+
+            # 3. Upload & Create Assignment
+            self.progress.emit("Đang tải lên Google Classroom...")
+            success, result = self.google_mgr.create_assignment_with_pdf(
+                self.course_id, self.title, self.description, pdf_path
+            )
+
+            if success:
+                self.finished.emit(True, result)
+            else:
+                self.finished.emit(False, f"Lỗi API: {result}")
+
+        except Exception as e:
+            self.finished.emit(False, f"Lỗi không xác định: {str(e)}")
+
+
 class ExamPreparerWorker(QThread):
-    progress = pyqtSignal(str) 
+    progress = pyqtSignal(str)
     finished = pyqtSignal(bool, dict)
 
     def __init__(self, questions, title, duration=90, external_tex=None, num_variants=1):
         super().__init__()
-        self.questions = list(questions) 
+        self.questions = list(questions)
         self.title = title
         self.duration = duration
         self.external_tex = external_tex
@@ -932,9 +1005,9 @@ class ExamPreparerWorker(QThread):
         try:
             self.progress.emit("Đang xử lý dữ liệu...")
             import random, copy, time
-            
+
             variants_list = []
-            
+
             # Khởi tạo Mixer
             mixer = ExamMixer() if 'ExamMixer' in globals() else None
 
@@ -942,14 +1015,14 @@ class ExamPreparerWorker(QThread):
             for v_idx in range(self.num_variants):
                 code = str(101 + v_idx)
                 self.progress.emit(f"Đang tạo mã đề {code} ({v_idx+1}/{self.num_variants})...")
-                
+
                 # 1. Clone & Shuffle
                 qs_clone = copy.deepcopy(self.questions)
-                
+
                 # Chỉ trộn câu hỏi nếu tạo nhiều mã đề HOẶC không dùng file ngoài
                 if self.num_variants > 1 or not self.external_tex:
                     random.shuffle(qs_clone)
-                
+
                 # 2. Trộn đáp án (Chỉ Trắc nghiệm)
                 if mixer:
                     for q in qs_clone:
@@ -969,10 +1042,10 @@ class ExamPreparerWorker(QThread):
                     r"\begin{center}\textbf{\Large " + f"{self.title} (Mã đề {code})" + r"}\end{center}",
                     r"\setcounter{ex}{0}"
                 ]
-                
+
                 exam_matrix = []
                 current_dang = None
-                
+
                 section_titles = {
                     1: r"\section*{PHẦN I. Câu trắc nghiệm nhiều phương án lựa chọn.} \textbf{\textit{Thí sinh trả lời các câu sau. Mỗi câu hỏi thí sinh chỉ lựa chọn một phương án.}}",
                     2: r"\section*{PHẦN II. Câu trắc nghiệm đúng sai.} \textbf{\textit{Thí sinh trả lời các câu sau. Trong mỗi ý {\bfseries a)}, {\bfseries b)}, {\bfseries c)}, {\bfseries d)} ở mỗi câu, thí sinh chọn đúng hoặc sai.}}",
@@ -1018,7 +1091,7 @@ class ExamPreparerWorker(QThread):
                         "pdf_filename": f"{pdf_name}.pdf",
                         "exam_matrix": exam_matrix
                     })
-            
+
             if not variants_list:
                 self.finished.emit(False, {"error": "Không tạo được đề nào!"})
                 return
@@ -1441,6 +1514,18 @@ class GoogleManagerFull:
         coursework = self.service_class.courses().courseWork().create(
             courseId=course_id, body=coursework).execute()
         return coursework.get('alternateLink')
+
+    def create_assignment_with_pdf(self, course_id, title, description, pdf_path):
+        """Workflow đầy đủ: Upload PDF -> Tạo bài tập"""
+        try:
+            # 1. Upload file lên Drive
+            file_id = self.upload_to_drive(pdf_path)
+
+            # 2. Tạo bài tập với file đính kèm
+            link = self.create_assignment(course_id, title, description, file_id)
+            return True, link
+        except Exception as e:
+            return False, str(e)
 
     # --- CÁC HÀM MỚI (CHO GOOGLE FORMS & ẢNH) ---
     # Tìm trong class GoogleManagerFull
@@ -1986,6 +2071,77 @@ class DropZoneTreeWidget(QTreeWidget):
 # =============================================================================
 # 6. ID6 DIALOG
 # =============================================================================
+class ClassroomControlPanel(QDialog):
+    """Bảng điều khiển Trung tâm Classroom (Split UI)"""
+    def __init__(self, parent=None, callback_exam=None, callback_homework=None):
+        super().__init__(parent)
+        self.callback_exam = callback_exam
+        self.callback_homework = callback_homework
+        self.setWindowTitle("Trung tâm Google Classroom")
+        self.setFixedSize(700, 450)
+        self.setStyleSheet("""
+            QDialog { background-color: #fdfdfd; }
+            QPushButton {
+                border-radius: 12px;
+                font-weight: bold;
+                font-size: 16px;
+                padding: 15px;
+                border: 2px solid #ddd;
+            }
+            QPushButton:hover {
+                background-color: #f0f8ff;
+                border-color: #3498db;
+            }
+            QLabel { color: #555; font-size: 14px; }
+        """)
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(30, 30, 30, 30)
+        layout.setSpacing(20)
+
+        # Header
+        header = QLabel("CHỌN CHẾ ĐỘ TƯƠNG TÁC CLASSROOM")
+        header.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        header.setStyleSheet("font-size: 20px; font-weight: 900; color: #2c3e50;")
+        layout.addWidget(header)
+
+        # Grid Buttons
+        grid = QHBoxLayout()
+        grid.setSpacing(20)
+
+        # Mode A: Giao bài tập
+        btn_hw = QPushButton("📝  GIAO BÀI TẬP (PDF)\n\n(Tạo bài tập tĩnh, nộp file)")
+        btn_hw.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+        btn_hw.setIcon(QIcon(":/icons/pdf.png")) # Placeholder
+        btn_hw.setStyleSheet("background-color: #e8f6f3; color: #16a085;")
+        btn_hw.clicked.connect(self.on_homework)
+        grid.addWidget(btn_hw)
+
+        # Mode B: Thi Online
+        btn_exam = QPushButton("🌍  TỔ CHỨC THI ONLINE\n\n(Chấm điểm tự động, realtime)")
+        btn_exam.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+        btn_exam.setStyleSheet("background-color: #fef5e7; color: #d35400;")
+        btn_exam.clicked.connect(self.on_exam)
+        grid.addWidget(btn_exam)
+
+        layout.addLayout(grid)
+
+        # Description
+        desc = QLabel("• <b>Giao bài tập:</b> Hệ thống sẽ biên dịch đề thành PDF và đăng lên Classroom.\n"
+                      "• <b>Thi Online:</b> Hệ thống tạo phòng thi ảo, học sinh làm bài trên web và đồng bộ điểm.")
+        desc.setWordWrap(True)
+        desc.setStyleSheet("background: #f9f9f9; padding: 15px; border-radius: 8px;")
+        layout.addWidget(desc)
+
+    def on_homework(self):
+        self.accept()
+        if self.callback_homework: self.callback_homework()
+
+    def on_exam(self):
+        self.accept()
+        if self.callback_exam: self.callback_exam()
+
+
 class ID6AssignDialog(QDialog):
     """
     Dialog gán ID6 (Fix: Cập nhật hiển thị Lớp/Môn trên bảng sau khi lưu)
@@ -3121,14 +3277,17 @@ class ClassroomDialog(QDialog):
         self.questions = question_objects
         self.setWindowTitle("📚 Đăng bài lên Google Classroom")
         
-        # 1. Tự động phóng to toàn màn hình
-        self.setWindowState(Qt.WindowState.WindowMaximized)
+        # 1. Kích thước hợp lý (tránh lỗi full screen che mất dialog khác)
+        # [OPTIMIZATION] Set fixed size compatible with small screens
+        self.setFixedSize(600, 680)
         
         self.google = GoogleManagerFull()
         self.courses = []
         
         # Setup giao diện chính
         main_layout = QVBoxLayout(self)
+        main_layout.setContentsMargins(20, 20, 20, 20)
+        main_layout.setSpacing(10)
         
         # --- VÙNG CUỘN (SCROLL AREA) ---
         scroll = QScrollArea()
@@ -3137,22 +3296,29 @@ class ClassroomDialog(QDialog):
         
         content_widget = QWidget()
         layout = QVBoxLayout(content_widget)
+        layout.setSpacing(15)
         
         # Tiêu đề
-        layout.addWidget(QLabel("<b>1. Tiêu đề bài tập:</b>"))
+        lbl_t = QLabel("<b>1. Tiêu đề bài tập:</b>")
+        lbl_t.setWordWrap(True)
+        layout.addWidget(lbl_t)
         self.txt_title = QLineEdit()
         self.txt_title.setPlaceholderText("VD: Kiểm tra 15 phút - Hình học")
         layout.addWidget(self.txt_title)
         
         # Mô tả
-        layout.addWidget(QLabel("<b>Hướng dẫn/Mô tả:</b>"))
+        lbl_d = QLabel("<b>Hướng dẫn/Mô tả:</b>")
+        lbl_d.setWordWrap(True)
+        layout.addWidget(lbl_d)
         self.txt_desc = QTextEdit()
         self.txt_desc.setPlaceholderText("Nhập lời dặn dò học sinh...")
-        self.txt_desc.setMinimumHeight(80) 
+        self.txt_desc.setMinimumHeight(100)
         layout.addWidget(self.txt_desc)
         
         # Chọn lớp
-        layout.addWidget(QLabel("<b>2. Chọn lớp học:</b>"))
+        lbl_c = QLabel("<b>2. Chọn lớp học:</b>")
+        lbl_c.setWordWrap(True)
+        layout.addWidget(lbl_c)
         self.cb_courses = QComboBox()
         self.cb_courses.setMinimumHeight(40) # Cao hơn để dễ chọn trên màn cảm ứng
         layout.addWidget(self.cb_courses)
@@ -3160,6 +3326,7 @@ class ClassroomDialog(QDialog):
         # Trạng thái
         layout.addSpacing(10)
         self.lbl_status = QLabel("Đang kết nối Google...")
+        self.lbl_status.setWordWrap(True)
         self.lbl_status.setStyleSheet("color: blue; font-weight: bold; font-size: 14px;")
         layout.addWidget(self.lbl_status)
         
@@ -6747,7 +6914,20 @@ class MainApp(QMainWindow):
         self.current_exam = []
         self.generated_exams = {}
         self.setWindowTitle("BankAI Pro - 2025 Matrix Edition")
-        self.setGeometry(100, 100, 1400, 900)
+
+        # [OPTIMIZATION] Auto-fit screen
+        screen = QApplication.primaryScreen().availableGeometry()
+        w = int(screen.width() * 0.9)
+        h = int(screen.height() * 0.9)
+        # Ensure minimum size but not larger than screen
+        w = max(1000, min(w, 1600))
+        h = max(700, min(h, 1200))
+
+        # Center window
+        x = (screen.width() - w) // 2
+        y = (screen.height() - h) // 2
+        self.setGeometry(x, y, w, h)
+
         self.setStyleSheet(APP_STYLE)
         
         w = QWidget(); self.setCentralWidget(w);
@@ -8335,20 +8515,14 @@ class MainApp(QMainWindow):
 
     # Thêm vào trong class MainApp
     def show_classroom_menu(self):
-        """Menu chọn chế độ khi bấm nút Google Classroom"""
-        menu = QMenu(self)
-        menu.setStyleSheet("QMenu { font-size: 14px; padding: 5px; } QMenu::item { padding: 10px 20px; }")
-        
-        act_upload = menu.addAction("📤 Đăng bài tập (PDF/Form)")
-        act_exam = menu.addAction("🌍 Tổ chức Thi Online (Global)")
-        
-        # Lấy vị trí nút chuột để hiện menu
-        action = menu.exec(QCursor.pos())
-        
-        if action == act_upload:
-            self.open_classroom_dialog() # Hàm cũ
-        elif action == act_exam:
-            self.create_online_classroom_exam() # Hàm mới bên dưới
+        """Mở Bảng điều khiển Google Classroom (Thay thế Menu cũ)"""
+        # Instantiate Control Panel
+        panel = ClassroomControlPanel(
+            self,
+            callback_exam=self.create_online_classroom_exam,
+            callback_homework=self.open_classroom_dialog
+        )
+        panel.exec()
 
     def create_online_classroom_exam(self):
         # TẠO MENU LỰA CHỌN NGUỒN ĐỀ
