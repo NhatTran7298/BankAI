@@ -5254,7 +5254,23 @@ class WebServerThread(QThread):
                 self.server_ready.emit(self.public_url)
         except Exception as e: self.server_ready.emit(f"Lỗi Ngrok: {e}")
 
-        uvicorn.run(app, host="0.0.0.0", port=self.port, log_level="critical", proxy_headers=True)
+        import uvicorn
+        config = uvicorn.Config(app, host="0.0.0.0", port=self.port, log_level="critical", proxy_headers=True)
+        self.server = uvicorn.Server(config)
+        self.server.run()
+
+    def stop(self):
+        """Dừng server và ngrok an toàn"""
+        if hasattr(self, 'server') and self.server:
+            self.server.should_exit = True
+
+        try:
+            from pyngrok import ngrok
+            ngrok.kill()
+        except:
+            pass
+
+        self.wait()
 # =============================================================================
 #  MODULE GOOGLE CLASSROOM & PDF (THÊM MỚI VÀO ĐÂY)
 # =============================================================================
@@ -8365,6 +8381,17 @@ class MainApp(QMainWindow):
         
         return questions
 
+    def closeEvent(self, event):
+        """Xử lý khi đóng ứng dụng"""
+        try:
+            cleanup_cache(self)
+        except:
+            pass
+
+        if hasattr(self, 'web_thread') and self.web_thread.isRunning():
+            self.web_thread.stop()
+        event.accept()
+
     def toggle_web_server(self):
         """Bật/Tắt Web Server - Fix lỗi tự chạy khi chưa bấm OK"""
         if self.btn_web.isChecked():
@@ -8451,6 +8478,9 @@ class MainApp(QMainWindow):
 
         else:
             # Tắt Server
+            if hasattr(self, 'web_thread') and self.web_thread.isRunning():
+                self.web_thread.stop()
+
             self.btn_web.setText("🌍 Bật Thi Online")
             self.btn_web.setStyleSheet("background-color: rgba(255, 255, 255, 0.2); color: white;")
             QMessageBox.information(self, "Đã tắt", "Đã đóng phòng thi ảo.")
