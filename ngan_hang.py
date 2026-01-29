@@ -305,7 +305,7 @@ from PyQt6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout,
                              QSpinBox, QTabWidget, QHeaderView, QProgressDialog, 
                              QTreeWidget, QTreeWidgetItem, QSplitter, QLineEdit,
                              QTableWidgetItem, QScrollArea, QFrame, QGridLayout,
-                             QGroupBox, QSplashScreen) # <--- Thêm QSplashScreen
+                             QGroupBox, QSplashScreen, QStackedWidget) # <--- Thêm QSplashScreen
 
 # Tìm dòng from PyQt6.QtGui import ... và thêm QPixmap, QPainter vào
 from PyQt6.QtGui import QDrag, QFont, QIcon, QColor, QAction, QBrush, QPixmap, QPainter, QPen, QCursor
@@ -344,7 +344,7 @@ QMainWindow {
     background-color: #f4f6f9;
 }
 QWidget {
-    font-family: 'Segoe UI', Arial, sans-serif;
+    font-family: Arial, sans-serif;
     font-size: 14px;
     color: #2c3e50;
 }
@@ -916,106 +916,196 @@ class AIEngine:
 # 3. BACKGROUND WORKERS
 # =============================================================================
 
+class AssignmentUploadWorker(QThread):
+    progress = pyqtSignal(str)
+    finished = pyqtSignal(bool, str)
+
+    def __init__(self, questions, title, description, course_id, google_mgr):
+        super().__init__()
+        self.questions = questions
+        self.title = title
+        self.description = description
+        self.course_id = course_id
+        self.google_mgr = google_mgr
+
+    def run(self):
+        try:
+            self.progress.emit("Đang biên soạn nội dung PDF...")
+            
+            # 1. Generate TeX Body
+            body_content = [
+                r"\begin{center}\textbf{\Large " + self.title + r"}\end{center}",
+                r"\setcounter{ex}{0}"
+            ]
+            
+            # Simple sorting/grouping similar to ExamPreparerWorker
+            sanitized_qs = []
+            for q in self.questions:
+                if 'dang' not in q: q['dang'] = 4
+                sanitized_qs.append(q)
+            sanitized_qs.sort(key=lambda x: x['dang'])
+            
+            current_dang = None
+            section_titles = {
+                1: r"\section*{PHẦN I. Câu trắc nghiệm nhiều phương án lựa chọn.}",
+                2: r"\section*{PHẦN II. Câu trắc nghiệm đúng sai.}",
+                3: r"\section*{PHẦN III. Câu trắc nghiệm trả lời ngắn.}",
+                4: r"\section*{PHẦN IV. Tự luận / Khác}"
+            }
+
+            for q in sanitized_qs:
+                dang = q['dang']
+                if dang != current_dang:
+                    if dang in section_titles:
+                        body_content.append(r"\vspace{0.5cm}" + section_titles[dang] + r"\vspace{0.2cm}")
+                    current_dang = dang
+                body_content.append(q.get('content_tex', ''))
+
+            tex_body = "\n".join(body_content)
+            final_tex = LATEX_TEMPLATE.replace("__CONTENT__", tex_body)
+            
+            # 2. Compile PDF
+            self.progress.emit("Đang biên dịch PDF (LaTeX)...")
+            import time
+            pdf_name = f"homework_{int(time.time())}"
+            msg, pdf_path = PDFCompiler.compile_tex_to_pdf(final_tex, pdf_name)
+            
+            if not pdf_path:
+                self.finished.emit(False, f"Lỗi biên dịch: {msg}")
+                return
+
+            # 3. Upload & Create Assignment
+            self.progress.emit("Đang tải lên Google Classroom...")
+            success, result = self.google_mgr.create_assignment_with_pdf(
+                self.course_id, self.title, self.description, pdf_path
+            )
+            
+            if success:
+                self.finished.emit(True, result)
+            else:
+                self.finished.emit(False, f"Lỗi API: {result}")
+
+        except Exception as e:
+            self.finished.emit(False, f"Lỗi không xác định: {str(e)}")
+
+
 class ExamPreparerWorker(QThread):
     progress = pyqtSignal(str) 
     finished = pyqtSignal(bool, dict)
 
-    def __init__(self, questions, title, duration=90, external_tex=None):
+    def __init__(self, questions, title, duration=90, external_tex=None, num_variants=1):
         super().__init__()
         self.questions = list(questions) 
         self.title = title
         self.duration = duration
         self.external_tex = external_tex
-
-    # (Hàm extract_latex_key bạn có thể xóa hoặc giữ nguyên, 
-    # vì bây giờ ta tin tưởng key từ Dialog gửi sang hơn)
+        self.num_variants = num_variants
 
     def run(self):
         try:
             self.progress.emit("Đang xử lý dữ liệu...")
+            import random, copy, time
             
-            # 1. Sắp xếp (Sort)
-            sanitized_qs = []
-            for q in self.questions:
-                # Đảm bảo 'dang' luôn tồn tại
-                q['dang'] = q.get('dang', 4)
-                sanitized_qs.append(q)
+            variants_list = []
             
-            sanitized_qs.sort(key=lambda x: x['dang'])
+            # Khởi tạo Mixer
+            mixer = ExamMixer() if 'ExamMixer' in globals() else None
 
-            # 2. Tạo nội dung & Matrix Key
-            full_content = [
-                r"\begin{center}\textbf{\Large " + self.title + r"}\end{center}",
-                r"\setcounter{ex}{0}"
-            ]
-            
-            exam_data = []
-            current_dang = None
-            
-            section_titles = {
-                1: r"\section*{PHẦN I. Câu trắc nghiệm nhiều phương án lựa chọn.} \textbf{\textit{Thí sinh trả lời các câu sau. Mỗi câu hỏi thí sinh chỉ lựa chọn một phương án.}}",
-                2: r"\section*{PHẦN II. Câu trắc nghiệm đúng sai.} \textbf{\textit{Thí sinh trả lời các câu sau. Trong mỗi ý {\bfseries a)}, {\bfseries b)}, {\bfseries c)}, {\bfseries d)} ở mỗi câu, thí sinh chọn đúng hoặc sai.}}",
-                3: r"\section*{PHẦN III. Câu trắc nghiệm trả lời ngắn.} \textbf{\textit{Thí sinh trả lời các câu sau.}}",
-                4: r"\section*{PHẦN IV. Tự luận / Khác}"
-            }
+            # LOOP VARIANT
+            for v_idx in range(self.num_variants):
+                code = str(101 + v_idx)
+                self.progress.emit(f"Đang tạo mã đề {code} ({v_idx+1}/{self.num_variants})...")
+                
+                # 1. Clone & Shuffle
+                qs_clone = copy.deepcopy(self.questions)
+                
+                # Chỉ trộn câu hỏi nếu tạo nhiều mã đề HOẶC không dùng file ngoài
+                if self.num_variants > 1 or not self.external_tex:
+                    random.shuffle(qs_clone)
+                
+                # 2. Trộn đáp án (Chỉ Trắc nghiệm)
+                if mixer:
+                    for q in qs_clone:
+                        if q.get('dang', 4) == 1: # TN
+                            tex = q.get('content_tex', '')
+                            # Hàm permute_content trả về (tex_mới, key_mới)
+                            new_tex, new_key = mixer.permute_content(tex)
+                            q['content_tex'] = new_tex
+                            q['key'] = new_key
 
-            for idx, q in enumerate(sanitized_qs):
-                dang = q['dang']
-                # Lấy content an toàn
-                tex = q.get('content_tex', q.get('content', ''))
-                
-                if dang != current_dang:
-                    if dang in section_titles:
-                        full_content.append(r"\vspace{0.5cm}")
-                        full_content.append(section_titles[dang])
-                        full_content.append(r"\vspace{0.2cm}")
-                    current_dang = dang
-                
-                full_content.append(tex)
-                
-                # [FIX LỖI KEY ERROR]
-                # Luôn dùng .get() và giá trị mặc định
-                final_key = q.get('key', '?')
-                
-                # Nếu key là None hoặc rỗng
-                if not final_key: final_key = "?"
-                
-                exam_data.append({
-                    "id": idx + 1,
-                    "type": dang,
-                    "key": final_key
-                })
+                # 3. Sắp xếp lại theo Dạng (để in ra PDF đẹp)
+                for q in qs_clone: q['dang'] = q.get('dang', 4)
+                qs_clone.sort(key=lambda x: x['dang'])
 
-            # 3. Biên dịch PDF
-            self.progress.emit("Đang biên dịch PDF...")
+                # 4. Generate Body
+                full_content = [
+                    r"\begin{center}\textbf{\Large " + f"{self.title} (Mã đề {code})" + r"}\end{center}",
+                    r"\setcounter{ex}{0}"
+                ]
+                
+                exam_matrix = []
+                current_dang = None
+                
+                section_titles = {
+                    1: r"\section*{PHẦN I. Câu trắc nghiệm nhiều phương án lựa chọn.} \textbf{\textit{Thí sinh trả lời các câu sau. Mỗi câu hỏi thí sinh chỉ lựa chọn một phương án.}}",
+                    2: r"\section*{PHẦN II. Câu trắc nghiệm đúng sai.} \textbf{\textit{Thí sinh trả lời các câu sau. Trong mỗi ý {\bfseries a)}, {\bfseries b)}, {\bfseries c)}, {\bfseries d)} ở mỗi câu, thí sinh chọn đúng hoặc sai.}}",
+                    3: r"\section*{PHẦN III. Câu trắc nghiệm trả lời ngắn.} \textbf{\textit{Thí sinh trả lời các câu sau.}}",
+                    4: r"\section*{PHẦN IV. Tự luận / Khác}"
+                }
+
+                for idx, q in enumerate(qs_clone):
+                    dang = q['dang']
+                    tex = q.get('content_tex', q.get('content', ''))
+                    
+                    if dang != current_dang:
+                        if dang in section_titles:
+                            full_content.append(r"\vspace{0.5cm}")
+                            full_content.append(section_titles[dang])
+                            full_content.append(r"\vspace{0.2cm}")
+                        current_dang = dang
+                    
+                    full_content.append(tex)
+                    
+                    final_key = q.get('key', '?') or "?"
+                    exam_matrix.append({
+                        "id": idx + 1,
+                        "type": dang,
+                        "key": final_key
+                    })
+
+                # 5. Compile PDF
+                final_tex = ""
+                if self.external_tex and os.path.exists(self.external_tex) and self.num_variants == 1:
+                    # Nếu dùng file ngoài và chỉ 1 đề -> Dùng nguyên bản
+                    with open(self.external_tex, 'r', encoding='utf-8') as f: final_tex = f.read()
+                else:
+                    tex_body = "\n".join(full_content)
+                    final_tex = LATEX_TEMPLATE.replace("__CONTENT__", tex_body)
+                
+                pdf_name = f"exam_{code}_{int(time.time())}"
+                msg, pdf_path = PDFCompiler.compile_tex_to_pdf(final_tex, pdf_name)
+                
+                if pdf_path:
+                    variants_list.append({
+                        "code": code,
+                        "pdf_filename": f"{pdf_name}.pdf",
+                        "exam_matrix": exam_matrix
+                    })
             
-            final_tex = ""
-            if self.external_tex and os.path.exists(self.external_tex):
-                # Nếu có file TeX riêng, đọc nội dung file đó
-                try:
-                    with open(self.external_tex, 'r', encoding='utf-8') as f:
-                        final_tex = f.read()
-                except Exception as e:
-                    self.finished.emit(False, {"error": f"Lỗi đọc file TeX: {e}"})
-                    return
-            else:
-                # Nếu không, dùng nội dung tự sinh từ DB
-                tex_body = "\n".join(full_content)
-                final_tex = LATEX_TEMPLATE.replace("__CONTENT__", tex_body)
-            
-            import time
-            pdf_name = f"online_exam_{int(time.time())}"
-            msg, pdf_path = PDFCompiler.compile_tex_to_pdf(final_tex, pdf_name)
-            
-            if not pdf_path:
-                self.finished.emit(False, {"error": msg})
+            if not variants_list:
+                self.finished.emit(False, {"error": "Không tạo được đề nào!"})
                 return
 
+            # Result Payload
+            first = variants_list[0]
             result_payload = {
-                "pdf_filename": f"{pdf_name}.pdf",
-                "exam_matrix": exam_data,
                 "title": self.title,
-                "duration": self.duration * 60
+                "duration": self.duration * 60,
+                # Backward compat
+                "pdf_filename": first["pdf_filename"],
+                "exam_matrix": first["exam_matrix"],
+                # New feature
+                "variants": variants_list
             }
             self.finished.emit(True, result_payload)
 
@@ -1080,8 +1170,17 @@ class AutoIDWorker(QThread):
             try:
                 # Gọi AI
                 response = self.ai.model.generate_content(prompt)
-                txt = response.text.strip().replace("```json", "").replace("```", "")
-                data = json.loads(txt)
+                txt = response.text.strip()
+                
+                # [FIX] Robust parsing: Try to find JSON object structure
+                match = re.search(r"\{.*\}", txt, re.DOTALL)
+                if match:
+                    json_str = match.group(0)
+                    data = json.loads(json_str)
+                else:
+                    # Fallback: try raw cleaning
+                    clean_txt = txt.replace("```json", "").replace("```", "").strip()
+                    data = json.loads(clean_txt)
                 
                 # Gửi kết quả về UI
                 self.item_finished.emit(idx, data)
@@ -1091,6 +1190,7 @@ class AutoIDWorker(QThread):
                 
             except Exception as e:
                 print(f"Lỗi AI câu {idx}: {e}")
+                # print(f"Raw response: {txt if 'txt' in locals() else 'None'}")
         
         self.finished.emit()
 
@@ -1110,7 +1210,7 @@ class BatchAIWorker(QThread):
             for idx, q in enumerate(self.base_qs):
                 p = int(((i * len(self.base_qs) + idx) / total) * 100)
                 self.progress.emit(p, f"Đề {code}: Xử lý câu {idx+1}...")
-                time.sleep(2)
+                time.sleep(0.1)
                 
                 # --- FIX LỖI KeyError: 'content' ---
                 # Kiểm tra cả 'content_tex' và 'content', nếu không có thì bỏ qua
@@ -1396,6 +1496,33 @@ class GoogleManagerFull:
             raise e
 
     # --- CÁC HÀM CŨ (QUAN TRỌNG) ---
+    def get_students(self, course_id):
+        """Lấy danh sách học sinh trong lớp"""
+        students = []
+        try:
+            page_token = None
+            while True:
+                response = self.service_class.courses().students().list(
+                    courseId=course_id,
+                    pageToken=page_token,
+                    pageSize=100
+                ).execute()
+                
+                for s in response.get('students', []):
+                    profile = s.get('profile', {})
+                    students.append({
+                        'name': profile.get('name', {}).get('fullName', 'Unknown'),
+                        'email': profile.get('emailAddress', ''),
+                        'id': profile.get('id', '')
+                    })
+                
+                page_token = response.get('nextPageToken', None)
+                if not page_token:
+                    break
+        except Exception as e:
+            print(f"Lỗi lấy danh sách học sinh: {e}")
+        return students
+
     def get_courses(self):
         """Lấy danh sách lớp học đang hoạt động"""
         results = self.service_class.courses().list(courseStates=['ACTIVE']).execute()
@@ -1424,6 +1551,18 @@ class GoogleManagerFull:
         coursework = self.service_class.courses().courseWork().create(
             courseId=course_id, body=coursework).execute()
         return coursework.get('alternateLink')
+
+    def create_assignment_with_pdf(self, course_id, title, description, pdf_path):
+        """Workflow đầy đủ: Upload PDF -> Tạo bài tập"""
+        try:
+            # 1. Upload file lên Drive
+            file_id = self.upload_to_drive(pdf_path)
+            
+            # 2. Tạo bài tập với file đính kèm
+            link = self.create_assignment(course_id, title, description, file_id)
+            return True, link
+        except Exception as e:
+            return False, str(e)
 
     # --- CÁC HÀM MỚI (CHO GOOGLE FORMS & ẢNH) ---
     # Tìm trong class GoogleManagerFull
@@ -1723,6 +1862,79 @@ class Backend:
 # =============================================================================
 # 5. CUSTOM WIDGETS
 # =============================================================================
+class ModernSidebar(QWidget):
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setFixedWidth(260) # Sidebar width
+        self.setStyleSheet("""
+            QWidget { background-color: #fdfdfd; border-right: 1px solid #e0e0e0; }
+            QPushButton {
+                text-align: left;
+                padding: 12px 20px;
+                border: none;
+                border-radius: 8px;
+                background-color: transparent;
+                color: #555;
+                font-weight: 600;
+                font-size: 15px;
+                margin: 4px 12px;
+            }
+            QPushButton:hover {
+                background-color: #f5f6fa;
+                color: #2c3e50;
+            }
+            QPushButton:checked {
+                background-color: #ED840D; /* Original Brand Color */
+                color: white;
+                font-weight: bold;
+            }
+            QLabel {
+                color: #95a5a6; font-weight: bold; font-size: 11px;
+                margin-top: 25px; margin-left: 20px; margin-bottom: 8px;
+                text-transform: uppercase; letter-spacing: 0.5px;
+            }
+        """)
+        
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(0, 25, 0, 25)
+        layout.setSpacing(6)
+        
+        # Logo Area
+        logo_layout = QHBoxLayout()
+        logo_layout.setContentsMargins(25, 0, 20, 20)
+        lbl_logo = QLabel("🏛️ BANKAI PRO")
+        lbl_logo.setStyleSheet("font-size: 24px; font-weight: 900; color: #d35400; margin: 0; letter-spacing: -0.5px;")
+        logo_layout.addWidget(lbl_logo)
+        layout.addLayout(logo_layout)
+        
+        self.btn_group = QButtonGroup()
+        self.btn_group.setExclusive(True)
+        
+        # Navigation Items
+        self.add_label(layout, "Trung tâm điều khiển")
+        self.btn_dashboard = self.add_btn(layout, "🏠  Trang chủ / Thống kê", 0)
+        
+        self.add_label(layout, "Ngân hàng câu hỏi")
+        self.btn_manual = self.add_btn(layout, "✏️  Soạn đề Thủ công", 1)
+        self.btn_matrix = self.add_btn(layout, "🎲  Ma trận 2025 (Auto)", 2)
+        self.btn_ai = self.add_btn(layout, "🤖  AI Generator", 3)
+        
+        layout.addStretch()
+        
+        # Bottom Items
+        self.add_label(layout, "Hệ thống")
+        
+    def add_label(self, layout, text):
+        lbl = QLabel(text)
+        layout.addWidget(lbl)
+        
+    def add_btn(self, layout, text, id):
+        btn = QPushButton(text)
+        btn.setCheckable(True)
+        btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.btn_group.addButton(btn, id)
+        layout.addWidget(btn)
+        return btn
 class DragDropListWidget(QListWidget):
     def __init__(self, p=None): super().__init__(p); self.setDragEnabled(True); self.setSelectionMode(QListWidget.SelectionMode.SingleSelection); self.setAlternatingRowColors(True)
     def startDrag(self, actions):
@@ -1895,6 +2107,77 @@ class DropZoneTreeWidget(QTreeWidget):
 # =============================================================================
 # 6. ID6 DIALOG
 # =============================================================================
+class ClassroomControlPanel(QDialog):
+    """Bảng điều khiển Trung tâm Classroom (Split UI)"""
+    def __init__(self, parent=None, callback_exam=None, callback_homework=None):
+        super().__init__(parent)
+        self.callback_exam = callback_exam
+        self.callback_homework = callback_homework
+        self.setWindowTitle("Trung tâm Google Classroom")
+        self.setFixedSize(700, 450)
+        self.setStyleSheet("""
+            QDialog { background-color: #fdfdfd; }
+            QPushButton {
+                border-radius: 12px;
+                font-weight: bold;
+                font-size: 16px;
+                padding: 15px;
+                border: 2px solid #ddd;
+            }
+            QPushButton:hover {
+                background-color: #f0f8ff;
+                border-color: #3498db;
+            }
+            QLabel { color: #555; font-size: 14px; }
+        """)
+        
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(30, 30, 30, 30)
+        layout.setSpacing(20)
+        
+        # Header
+        header = QLabel("CHỌN CHẾ ĐỘ TƯƠNG TÁC CLASSROOM")
+        header.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        header.setStyleSheet("font-size: 20px; font-weight: 900; color: #2c3e50;")
+        layout.addWidget(header)
+        
+        # Grid Buttons
+        grid = QHBoxLayout()
+        grid.setSpacing(20)
+        
+        # Mode A: Giao bài tập
+        btn_hw = QPushButton("📝  GIAO BÀI TẬP (PDF)\n\n(Tạo bài tập tĩnh, nộp file)")
+        btn_hw.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+        btn_hw.setIcon(QIcon(":/icons/pdf.png")) # Placeholder
+        btn_hw.setStyleSheet("background-color: #e8f6f3; color: #16a085;")
+        btn_hw.clicked.connect(self.on_homework)
+        grid.addWidget(btn_hw)
+        
+        # Mode B: Thi Online
+        btn_exam = QPushButton("🌍  TỔ CHỨC THI ONLINE\n\n(Chấm điểm tự động, realtime)")
+        btn_exam.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+        btn_exam.setStyleSheet("background-color: #fef5e7; color: #d35400;")
+        btn_exam.clicked.connect(self.on_exam)
+        grid.addWidget(btn_exam)
+        
+        layout.addLayout(grid)
+        
+        # Description
+        desc = QLabel("• <b>Giao bài tập:</b> Hệ thống sẽ biên dịch đề thành PDF và đăng lên Classroom.\n"
+                      "• <b>Thi Online:</b> Hệ thống tạo phòng thi ảo, học sinh làm bài trên web và đồng bộ điểm.")
+        desc.setWordWrap(True)
+        desc.setStyleSheet("background: #f9f9f9; padding: 15px; border-radius: 8px;")
+        layout.addWidget(desc)
+
+    def on_homework(self):
+        self.accept()
+        if self.callback_homework: self.callback_homework()
+
+    def on_exam(self):
+        self.accept()
+        if self.callback_exam: self.callback_exam()
+
+
 class ID6AssignDialog(QDialog):
     """
     Dialog gán ID6 (Fix: Cập nhật hiển thị Lớp/Môn trên bảng sau khi lưu)
@@ -2192,9 +2475,13 @@ class ID6AssignDialog(QDialog):
                 if grade_idx >= 0: self.cb_g.setCurrentIndex(grade_idx)
                 
                 # Load Môn
-                subj = q.get('subject', 'D')
+                # [FIX LỖI] Xử lý trường hợp subject bị None
+                subj = q.get('subject')
+                if not subj: subj = 'D' # Mặc định là Đại số nếu dữ liệu trống
+                
                 for i in range(self.cb_s.count()):
-                    if self.cb_s.itemText(i).startswith(subj):
+                    # Ép kiểu str(subj) để đảm bảo không bị lỗi NoneType
+                    if self.cb_s.itemText(i).startswith(str(subj)):
                         self.cb_s.setCurrentIndex(i); break
                 
                 self.cb_g.blockSignals(False)
@@ -2217,7 +2504,8 @@ class ID6AssignDialog(QDialog):
                 lev = q.get('level')
                 if lev:
                     for i in range(self.cb_l.count()):
-                        if self.cb_l.itemText(i).startswith(lev):
+                        # [FIX LỖI] Ép kiểu str(lev) để an toàn
+                        if self.cb_l.itemText(i).startswith(str(lev)):
                             self.cb_l.setCurrentIndex(i); break
                             
                 # Load Dạng (Mới)
@@ -3030,14 +3318,17 @@ class ClassroomDialog(QDialog):
         self.questions = question_objects
         self.setWindowTitle("📚 Đăng bài lên Google Classroom")
         
-        # 1. Tự động phóng to toàn màn hình
-        self.setWindowState(Qt.WindowState.WindowMaximized)
+        # 1. Kích thước hợp lý (tránh lỗi full screen che mất dialog khác)
+        # [OPTIMIZATION] Set fixed size compatible with small screens
+        self.setFixedSize(600, 680)
         
         self.google = GoogleManagerFull()
         self.courses = []
         
         # Setup giao diện chính
         main_layout = QVBoxLayout(self)
+        main_layout.setContentsMargins(20, 20, 20, 20)
+        main_layout.setSpacing(10)
         
         # --- VÙNG CUỘN (SCROLL AREA) ---
         scroll = QScrollArea()
@@ -3046,22 +3337,29 @@ class ClassroomDialog(QDialog):
         
         content_widget = QWidget()
         layout = QVBoxLayout(content_widget)
+        layout.setSpacing(15)
         
         # Tiêu đề
-        layout.addWidget(QLabel("<b>1. Tiêu đề bài tập:</b>"))
+        lbl_t = QLabel("<b>1. Tiêu đề bài tập:</b>")
+        lbl_t.setWordWrap(True)
+        layout.addWidget(lbl_t)
         self.txt_title = QLineEdit()
         self.txt_title.setPlaceholderText("VD: Kiểm tra 15 phút - Hình học")
         layout.addWidget(self.txt_title)
         
         # Mô tả
-        layout.addWidget(QLabel("<b>Hướng dẫn/Mô tả:</b>"))
+        lbl_d = QLabel("<b>Hướng dẫn/Mô tả:</b>")
+        lbl_d.setWordWrap(True)
+        layout.addWidget(lbl_d)
         self.txt_desc = QTextEdit()
         self.txt_desc.setPlaceholderText("Nhập lời dặn dò học sinh...")
-        self.txt_desc.setMinimumHeight(80) 
+        self.txt_desc.setMinimumHeight(100) 
         layout.addWidget(self.txt_desc)
         
         # Chọn lớp
-        layout.addWidget(QLabel("<b>2. Chọn lớp học:</b>"))
+        lbl_c = QLabel("<b>2. Chọn lớp học:</b>")
+        lbl_c.setWordWrap(True)
+        layout.addWidget(lbl_c)
         self.cb_courses = QComboBox()
         self.cb_courses.setMinimumHeight(40) # Cao hơn để dễ chọn trên màn cảm ứng
         layout.addWidget(self.cb_courses)
@@ -3069,6 +3367,7 @@ class ClassroomDialog(QDialog):
         # Trạng thái
         layout.addSpacing(10)
         self.lbl_status = QLabel("Đang kết nối Google...")
+        self.lbl_status.setWordWrap(True)
         self.lbl_status.setStyleSheet("color: blue; font-weight: bold; font-size: 14px;")
         layout.addWidget(self.lbl_status)
         
@@ -3372,31 +3671,80 @@ class AutoFormWorker(QThread):
 
 class ExamMixer:
     """
-    Class xử lý trộn đề: 
-    - Hỗ trợ nhận diện \True để tìm đáp án đúng.
-    - Hỗ trợ cấu trúc \choice[...] có tham số tùy chọn.
-    - Hỗ trợ xuống dòng trong file LaTeX.
+    Class xử lý trộn đề (Phiên bản Fix lỗi cấu trúc):
+    - Sử dụng thuật toán đếm ngoặc {} để tách phương án chính xác tuyệt đối.
+    - Hỗ trợ công thức Toán phức tạp trong đáp án (\frac, \sqrt, ...).
     """
     
+    def find_closing_brace(self, text, open_pos):
+        """Hàm tìm vị trí dấu đóng ngoặc tương ứng"""
+        balance = 1
+        i = open_pos + 1
+        n = len(text)
+        while i < n:
+            char = text[i]
+            # Bỏ qua ký tự được escape (vd: \{ \})
+            if char == '\\' and i + 1 < n:
+                i += 2
+                continue
+            
+            if char == '{':
+                balance += 1
+            elif char == '}':
+                balance -= 1
+            
+            if balance == 0:
+                return i
+            i += 1
+        return -1
+
     def permute_content(self, text):
         """
         Input: Nội dung câu hỏi (LaTeX)
         Output: (Nội dung đã trộn, Ký tự đáp án đúng A/B/C/D)
         """
-        # Regex cải tiến bắt được cả \choice và \choice[2]
-        pattern = r"\\choice(?:\s*\[.*?\])?\s*\{(.*?)\}\s*\{(.*?)\}\s*\{(.*?)\}\s*\{(.*?)\}"
-        match = re.search(pattern, text, re.DOTALL)
+        # 1. Tìm vị trí lệnh \choice
+        # Regex chỉ dùng để tìm điểm bắt đầu, không dùng để capture nội dung
+        match = re.search(r"\\choice(?:\s*\[.*?\])?", text)
         
-        # Nếu không tìm thấy cấu trúc \choice -> Giữ nguyên, trả về Key None
         if not match:
+            # Nếu không tìm thấy \choice, trả về như cũ (có thể là tự luận hoặc lỗi)
+            # Cố gắng tìm Key trong comment nếu có
             key_match = re.search(r"\[KEY:\s*([A-D])\]", text, re.IGNORECASE)
             return text, (key_match.group(1).upper() if key_match else "?")
 
-        # 1. Lấy nội dung 4 phương án gốc
-        full_match = match.group(0) 
-        options = [match.group(1), match.group(2), match.group(3), match.group(4)]
+        start_idx = match.end()
+        full_command_start = match.start()
         
-        # 2. Tìm đáp án đúng dựa vào \True
+        # 2. Tách 4 phương án bằng cách đếm ngoặc
+        options = []
+        current_idx = start_idx
+        
+        try:
+            for _ in range(4):
+                # Bỏ qua khoảng trắng giữa các phương án
+                while current_idx < len(text) and text[current_idx].isspace():
+                    current_idx += 1
+                
+                if current_idx >= len(text) or text[current_idx] != '{':
+                    # Lỗi cấu trúc (không đủ 4 cặp ngoặc) -> Trả về gốc
+                    return text, "A"
+                
+                close_idx = self.find_closing_brace(text, current_idx)
+                if close_idx == -1: return text, "A" # Lỗi ngoặc không đóng
+                
+                # Lấy nội dung bên trong {}
+                content = text[current_idx+1 : close_idx]
+                options.append(content)
+                current_idx = close_idx + 1
+                
+            full_command_end = current_idx
+            
+        except Exception as e:
+            print(f"Lỗi parse choice: {e}")
+            return text, "A"
+
+        # 3. Tìm đáp án đúng (\True)
         correct_idx = -1
         clean_options = []
         
@@ -3407,67 +3755,69 @@ class ExamMixer:
             else:
                 clean_options.append(opt.strip())
         
-        # Nếu không thấy \True, thử tìm trong comment [KEY: X]
+        # Fallback: Nếu không có \True, tìm trong comment [KEY: X]
         if correct_idx == -1:
             key_match = re.search(r"\[KEY:\s*([A-D])\]", text, re.IGNORECASE)
             if key_match:
                 key_map = {'A': 0, 'B': 1, 'C': 2, 'D': 3}
                 correct_idx = key_map.get(key_match.group(1).upper(), -1)
 
-        # 3. Trộn thứ tự
+        # 4. Trộn thứ tự
         indices = [0, 1, 2, 3]
+        import random
         random.shuffle(indices)
         
-        # 4. Xây dựng lại nội dung mới
-        new_options = []
+        # 5. Xây dựng lại nội dung mới
+        new_options_tex = ""
         for i in indices:
             opt_content = clean_options[i]
-            # Nếu đây là đáp án đúng (dựa vào index cũ), thêm lại \True
             if i == correct_idx:
                 opt_content = "\\True " + opt_content
-            new_options.append(opt_content)
+            new_options_tex += f"{{{opt_content}}}" # Bọc lại bằng {}
             
-        # 5. Tạo chuỗi LaTeX \choice mới
-        new_choice_tex = f"\\choice{{{new_options[0]}}}{{{new_options[1]}}}{{{new_options[2]}}}{{{new_options[3]}}}"
-        new_text = text.replace(full_match, new_choice_tex)
+        # 6. Thay thế khối \choice cũ bằng khối mới
+        # Giữ lại phần text trước và sau \choice (lời dẫn, lời giải...)
+        prefix = text[:full_command_start]
+        suffix = text[full_command_end:]
         
-        # 6. Xác định Key mới (A/B/C/D)
+        # Giữ nguyên phần đầu lệnh (vd: \choice hoặc \choice[2])
+        command_head = text[match.start():match.end()].strip()
+        
+        new_text = f"{prefix}{command_head}{new_options_tex}{suffix}"
+        
+        # 7. Xác định Key mới
+        new_key_char = "?"
         if correct_idx != -1:
-            # --- ĐÃ SỬA LỖI TẠI ĐÂY (new_correct_idx) ---
             new_correct_idx = indices.index(correct_idx)
             inv_key_map = {0: 'A', 1: 'B', 2: 'C', 3: 'D'}
             new_key_char = inv_key_map[new_correct_idx]
-        else:
-            new_key_char = "?"
 
         return new_text, new_key_char
 
     def mix_exam(self, questions, num_variants=1, start_code=101):
-        """Logic trộn đề giữ nguyên, chỉ gọi hàm permute_content mới"""
+        """Logic trộn đề (Giữ nguyên logic cũ, chỉ thay đổi permute_content)"""
+        import random
         mixed_results = {} 
         
-        # Phân loại câu hỏi
-        p1 = [q for q in questions if q.get('dang') == 1] # Trắc nghiệm
-        p2 = [q for q in questions if q.get('dang') == 2] # Đúng sai
-        p3 = [q for q in questions if q.get('dang') == 3] # Trả lời ngắn
+        p1 = [q for q in questions if q.get('dang') == 1] # TN
+        p2 = [q for q in questions if q.get('dang') == 2] # Đ/S
+        p3 = [q for q in questions if q.get('dang') == 3] # TLN
         others = [q for q in questions if q.get('dang') not in [1, 2, 3]]
 
         for i in range(num_variants):
             exam_code = start_code + i
             variant_qs = []
             
-            # --- PHẦN 1: Trộn câu + Đảo đáp án ---
+            # Trộn câu hỏi TN và đảo đáp án
             curr_p1 = [q.copy() for q in p1] 
             random.shuffle(curr_p1) 
             
             final_p1 = []
             for q in curr_p1:
                 content = q.get('content_tex', '')
-                
-                # Gọi hàm trộn mới
                 new_content, new_key = self.permute_content(content)
                 
-                # Cập nhật [KEY: ...] trong text để đồng bộ (nếu cần debug)
+                # Cập nhật [KEY: ...] để đồng bộ
                 if re.search(r"\[KEY:.*?\]", new_content):
                      new_content = re.sub(r"\[KEY:.*?\]", f"[KEY: {new_key}]", new_content)
                 else:
@@ -3478,7 +3828,7 @@ class ExamMixer:
                 q_new['final_key'] = new_key 
                 final_p1.append(q_new)
 
-            # --- CÁC PHẦN KHÁC: Chỉ đảo câu ---
+            # Các phần khác chỉ đảo thứ tự câu
             curr_p2 = [q.copy() for q in p2]; random.shuffle(curr_p2)
             curr_p3 = [q.copy() for q in p3]; random.shuffle(curr_p3)
             curr_others = [q.copy() for q in others]
@@ -3507,7 +3857,7 @@ class TemplateLibraryDialog(QDialog):
         
         # Header
         header = QLabel("📋 THƯ VIỆN CẤU TRÚC ĐỀ THI 2025")
-        header.setFont(QFont("Segoe UI", 16, QFont.Weight.Bold))
+        header.setFont(QFont("Arial", 16, QFont.Weight.Bold))
         header.setStyleSheet("color: #c0392b; padding: 10px; text-transform: uppercase;")
         header.setAlignment(Qt.AlignmentFlag.AlignCenter)
         layout.addWidget(header)
@@ -4450,8 +4800,15 @@ WEB_UI_TEMPLATE = """
             <h2 class="text-2xl font-bold text-gray-800 mb-2">VÀO PHÒNG THI</h2>
             <div id="exam-title-display" class="text-blue-600 font-bold mb-6 text-sm uppercase">Đang tải thông tin đề...</div>
             
-            <input type="text" id="student-name" class="w-full p-3 border-2 border-gray-200 rounded-lg mb-3 text-center font-bold outline-none focus:border-blue-500" placeholder="Họ và Tên (VD: Nguyễn Văn A)" autocomplete="off">
-            <input type="email" id="student-email" class="w-full p-3 border-2 border-gray-200 rounded-lg mb-6 text-center font-bold outline-none focus:border-blue-500" placeholder="Email Google Classroom (Nếu có)" autocomplete="email">
+            <!-- [UPDATED] Select Roster -->
+            <select id="student-select" class="w-full p-3 border-2 border-gray-200 rounded-lg mb-3 text-center font-bold outline-none focus:border-blue-500 bg-white">
+                <option value="">-- Chọn tên của bạn --</option>
+            </select>
+            
+            <!-- Fallback input (hidden by default) -->
+            <input type="text" id="student-name" class="hidden w-full p-3 border-2 border-gray-200 rounded-lg mb-3 text-center font-bold outline-none focus:border-blue-500" placeholder="Hoặc nhập tên nếu không có trong danh sách">
+
+            <input type="email" id="student-email" class="w-full p-3 border-2 border-gray-200 rounded-lg mb-6 text-center font-bold outline-none focus:border-blue-500" placeholder="Email (Tự động điền)" readonly>
             <button onclick="window.joinRoom()" class="w-full bg-blue-600 text-white p-3 rounded-lg font-bold text-lg shadow-lg active:scale-95 transition">VÀO THI NGAY</button>
         </div>
         <div class="login-box hidden" id="waiting-msg">
@@ -4482,6 +4839,43 @@ WEB_UI_TEMPLATE = """
     </div>
 
     <script>
+        // [UPDATED] Student Roster Injection
+        const STUDENTS = __STUDENT_LIST__; // Injected by Python
+        
+        // Populate Dropdown
+        document.addEventListener('DOMContentLoaded', () => {
+            const sel = document.getElementById('student-select');
+            const inpName = document.getElementById('student-name');
+            const inpEmail = document.getElementById('student-email');
+            
+            if (STUDENTS && STUDENTS.length > 0) {
+                STUDENTS.sort((a,b) => a.name.localeCompare(b.name));
+                STUDENTS.forEach(s => {
+                    const opt = document.createElement('option');
+                    opt.value = s.id;
+                    opt.text = s.name;
+                    opt.dataset.email = s.email;
+                    sel.appendChild(opt);
+                });
+                
+                sel.addEventListener('change', () => {
+                    const opt = sel.options[sel.selectedIndex];
+                    if (opt.value) {
+                        inpName.value = opt.text;
+                        inpEmail.value = opt.dataset.email;
+                    } else {
+                        inpName.value = "";
+                        inpEmail.value = "";
+                    }
+                });
+            } else {
+                // No roster -> Show manual input
+                sel.classList.add('hidden');
+                inpName.classList.remove('hidden');
+                inpEmail.removeAttribute('readonly');
+            }
+        });
+
         // Lấy ID đề thi từ URL (VD: /exam/DE_THI_123 -> examId = DE_THI_123)
         var pathParts = window.location.pathname.split('/');
         var examId = pathParts[pathParts.length - 1]; // Lấy phần cuối cùng
@@ -4757,8 +5151,21 @@ class WebServerThread(QThread):
         except Exception as e: print(f"❌ Lỗi Sync: {e}")
 
     def run(self):
-        if self.ngrok_auth_token and "NHAP_TOKEN" not in self.ngrok_auth_token:
+        # 1. DIỆT SẠCH TIẾN TRÌNH NGROK CŨ
+        try:
+            print("🔄 Đang dọn dẹp các kết nối cũ...")
+            ngrok.kill()
+            import time
+            time.sleep(2)
+        except:
+            pass
+
+        # 2. CẤU HÌNH TOKEN (ĐOẠN ĐÃ SỬA)
+        # Bắt buộc nạp token để tránh lỗi ERR_NGROK_4018
+        if self.ngrok_auth_token:
             conf.get_default().auth_token = self.ngrok_auth_token
+            # Đặt vùng là US (Mỹ) hoặc AP (Châu Á) tùy chọn
+            conf.get_default().region = "us" 
         
         app = FastAPI()
         app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_credentials=True, allow_methods=["*"], allow_headers=["*"])
@@ -4767,8 +5174,13 @@ class WebServerThread(QThread):
         @app.get("/exam/{exam_id}")
         async def get_exam_ui(exam_id: str):
             # Kiểm tra xem đề có tồn tại không
-            if self.load_exam_file(exam_id):
-                return HTMLResponse(content=WEB_UI_TEMPLATE)
+            data = self.load_exam_file(exam_id)
+            if data:
+                # Inject Student List
+                students = data.get('students', [])
+                json_students = json.dumps(students, ensure_ascii=False).replace("</script>", "<\\/script>")
+                html = WEB_UI_TEMPLATE.replace("__STUDENT_LIST__", json_students)
+                return HTMLResponse(content=html)
             return HTMLResponse(content="<h1>❌ Đề thi không tồn tại hoặc đã bị xóa!</h1>")
 
         @app.get("/api/pdf/{filename}")
@@ -4789,8 +5201,21 @@ class WebServerThread(QThread):
                         
                         if exam_data:
                             manager.register(websocket, data['id'], f"{data['name']} [{exam_id}]")
+                            
+                            # [MỚI] Chọn ngẫu nhiên 1 mã đề nếu có nhiều variants
+                            payload = exam_data
+                            variants = exam_data.get('variants', [])
+                            if variants:
+                                import random
+                                selected_variant = random.choice(variants)
+                                # Tạo payload mới chỉ chứa variant này (để client render đúng PDF)
+                                payload = exam_data.copy()
+                                payload['pdf_filename'] = selected_variant['pdf_filename']
+                                payload['exam_matrix'] = selected_variant['exam_matrix']
+                                payload['variant_code'] = selected_variant['code']
+                                
                             # Gửi đúng đề thi đó cho học sinh
-                            await websocket.send_json({"type": "START_EXAM", "data": exam_data})
+                            await websocket.send_json({"type": "START_EXAM", "data": payload})
                         else:
                             await websocket.send_json({"type": "ERROR", "message": "Không tìm thấy dữ liệu đề thi!"})
 
@@ -5662,17 +6087,22 @@ class ExamConfigDialog(QDialog):
         gl.addWidget(QLabel("Thời gian (phút):"), 0, 2)
         self.inp_time = QSpinBox(); self.inp_time.setRange(5, 300); self.inp_time.setValue(90)
         gl.addWidget(self.inp_time, 0, 3)
+        
+        # [MỚI] Số lượng mã đề (GIỮ NGUYÊN DÒNG 1)
+        gl.addWidget(QLabel("Số mã đề (trộn):"), 1, 0)
+        self.inp_variants = QSpinBox(); self.inp_variants.setRange(1, 20); self.inp_variants.setValue(1)
+        gl.addWidget(self.inp_variants, 1, 1)
 
-        # [NEW] Chọn file TeX
-        gl.addWidget(QLabel("File TeX riêng (nếu có):"), 1, 0)
+        # [NEW] Chọn file TeX (SỬA THÀNH DÒNG 2)
+        gl.addWidget(QLabel("File TeX riêng (nếu có):"), 2, 0) # <--- Sửa số 1 thành 2
         self.txt_tex_path = QLineEdit()
         self.txt_tex_path.setPlaceholderText("Chọn file .tex để biên dịch PDF thay vì tạo tự động...")
         self.txt_tex_path.setReadOnly(True)
-        gl.addWidget(self.txt_tex_path, 1, 1, 1, 2)
+        gl.addWidget(self.txt_tex_path, 2, 1, 1, 2)    # <--- Sửa số 1 thành 2
         
         btn_browse = QPushButton("Chọn File")
         btn_browse.clicked.connect(self.browse_tex)
-        gl.addWidget(btn_browse, 1, 3)
+        gl.addWidget(btn_browse, 2, 3)                 # <--- Sửa số 1 thành 2
 
         layout.addWidget(grp_info)
 
@@ -5849,7 +6279,8 @@ class ExamConfigDialog(QDialog):
             "title": self.inp_title.text(),
             "time": self.inp_time.value(),
             "questions": self.final_questions,
-            "external_tex": self.tex_path
+            "external_tex": self.tex_path,
+            "num_variants": self.inp_variants.value()
         }
 
 class ExamMonitorDialog(QDialog):
@@ -6588,20 +7019,58 @@ class MainApp(QMainWindow):
         self.current_exam = []
         self.generated_exams = {}
         self.setWindowTitle("BankAI Pro - 2025 Matrix Edition")
-        self.setGeometry(100, 100, 1400, 900)
+        
+        # [OPTIMIZATION] Auto-fit screen
+        screen = QApplication.primaryScreen().availableGeometry()
+        w = int(screen.width() * 0.9)
+        h = int(screen.height() * 0.9)
+        # Ensure minimum size but not larger than screen
+        w = max(1000, min(w, 1600))
+        h = max(700, min(h, 1200))
+        
+        # Center window
+        x = (screen.width() - w) // 2
+        y = (screen.height() - h) // 2
+        self.setGeometry(x, y, w, h)
+        
         self.setStyleSheet(APP_STYLE)
         
-        w = QWidget(); self.setCentralWidget(w); l = QVBoxLayout(w)
-        l.addWidget(self.create_toolbar())
+        w = QWidget(); self.setCentralWidget(w); 
+        main_layout = QHBoxLayout(w)
+        main_layout.setContentsMargins(0,0,0,0)
+        main_layout.setSpacing(0)
         
-        self.stack = QTabWidget()
-        self.stack.addTab(self.create_home_tab(), "🏠 Trang chủ")
-        self.stack.addTab(self.create_manual_tab(), "✏️ Soạn đề (Thủ công)")
-        self.stack.addTab(self.create_matrix_tab(), "🎲 Tạo đề (Ma trận 2025)")
-        self.stack.addTab(self.create_ai_tab(), "🤖 Tạo đề (AI)")
+        # 1. SIDEBAR (LEFT)
+        self.sidebar = ModernSidebar()
+        main_layout.addWidget(self.sidebar)
         
-        l.addWidget(self.stack)
-        self.lbl_stat = QLabel("Ready"); l.addWidget(self.lbl_stat)
+        # 2. CONTENT AREA (RIGHT)
+        content_widget = QWidget()
+        content_layout = QVBoxLayout(content_widget)
+        content_layout.setContentsMargins(0,0,0,0)
+        content_layout.setSpacing(0)
+        
+        content_layout.addWidget(self.create_toolbar())
+        
+        # Stacked Widget
+        self.stack = QStackedWidget()
+        self.stack.addWidget(self.create_home_tab())   # Index 0
+        self.stack.addWidget(self.create_manual_tab()) # Index 1
+        self.stack.addWidget(self.create_matrix_tab()) # Index 2
+        self.stack.addWidget(self.create_ai_tab())     # Index 3
+        
+        content_layout.addWidget(self.stack)
+        
+        self.lbl_stat = QLabel(" Ready"); 
+        self.lbl_stat.setStyleSheet("background: #f0f0f0; padding: 5px; color: #555;")
+        content_layout.addWidget(self.lbl_stat)
+        
+        main_layout.addWidget(content_widget)
+
+        # Connect Sidebar Signals
+        self.sidebar.btn_group.buttonClicked.connect(self.switch_page)
+        self.sidebar.btn_dashboard.setChecked(True) # Default
+        
         QTimer.singleShot(100, self.load_stats)
 
         # --- THÊM TIMER SCHEDULER ---
@@ -6611,6 +7080,11 @@ class MainApp(QMainWindow):
         
         # Kiểm tra ngay khi mở app (xử lý các job bị lỡ)
         QTimer.singleShot(5000, self.check_scheduled_tasks)
+
+    def switch_page(self, btn):
+        id = self.sidebar.btn_group.id(btn)
+        if id >= 0:
+            self.stack.setCurrentIndex(id)
 
     def check_scheduled_tasks(self):
         """Kiểm tra xem có bài tập nào cần đăng không"""
@@ -6681,7 +7155,7 @@ class MainApp(QMainWindow):
         lbl_text = QLabel("BANKAI PRO 2025")
         lbl_text.setStyleSheet("""
             font-size: 20px; font-weight: 900; color: #ffffff; letter-spacing: 1px; 
-            background: transparent; border: none; font-family: 'Segoe UI', Arial, sans-serif;
+            background: transparent; border: none; font-family: Arial, sans-serif;
         """)
         brand_box.addWidget(lbl_logo); brand_box.addWidget(lbl_text)
         layout.addLayout(brand_box)
@@ -7965,7 +8439,7 @@ class MainApp(QMainWindow):
                 self.pd_prep.setWindowModality(Qt.WindowModality.WindowModal)
                 self.pd_prep.show()
 
-                self.prep_worker = ExamPreparerWorker(final_qs, title, duration, ext_tex)
+                self.prep_worker = ExamPreparerWorker(final_qs, title, duration, ext_tex, num_variants=config.get('num_variants', 1))
                 self.prep_worker.progress.connect(lambda s: self.pd_prep.setLabelText(s))
                 self.prep_worker.finished.connect(self.on_exam_prepared)
                 self.prep_worker.start()
@@ -8146,20 +8620,14 @@ class MainApp(QMainWindow):
 
     # Thêm vào trong class MainApp
     def show_classroom_menu(self):
-        """Menu chọn chế độ khi bấm nút Google Classroom"""
-        menu = QMenu(self)
-        menu.setStyleSheet("QMenu { font-size: 14px; padding: 5px; } QMenu::item { padding: 10px 20px; }")
-        
-        act_upload = menu.addAction("📤 Đăng bài tập (PDF/Form)")
-        act_exam = menu.addAction("🌍 Tổ chức Thi Online (Global)")
-        
-        # Lấy vị trí nút chuột để hiện menu
-        action = menu.exec(QCursor.pos())
-        
-        if action == act_upload:
-            self.open_classroom_dialog() # Hàm cũ
-        elif action == act_exam:
-            self.create_online_classroom_exam() # Hàm mới bên dưới
+        """Mở Bảng điều khiển Google Classroom (Thay thế Menu cũ)"""
+        # Instantiate Control Panel
+        panel = ClassroomControlPanel(
+            self, 
+            callback_exam=self.create_online_classroom_exam, 
+            callback_homework=self.open_classroom_dialog
+        )
+        panel.exec()
 
     def create_online_classroom_exam(self):
         # TẠO MENU LỰA CHỌN NGUỒN ĐỀ
@@ -8244,7 +8712,7 @@ class MainApp(QMainWindow):
                 if not hasattr(self, 'web_thread'): self.web_thread = WebServerThread(DB_PATH)
                 
                 # Chạy Worker biên dịch PDF (Không truyền external_tex để dùng Main hệ thống)
-                self.prep_worker = ExamPreparerWorker(config['questions'], exam_title, config['time'])
+                self.prep_worker = ExamPreparerWorker(config['questions'], exam_title, config['time'], num_variants=config.get('num_variants', 1))
                 
                 # --- HÀM XỬ LÝ KHI PDF ĐÃ SẴN SÀNG ---
                 def on_pdf_ready(success, data):
@@ -8256,6 +8724,15 @@ class MainApp(QMainWindow):
                     # Lưu thông tin lớp học vào data để dùng cho việc chấm điểm sau này
                     data['courseId'] = course_id
                     
+                    # [MỚI] Fetch danh sách học sinh để inject vào Web UI
+                    try:
+                        gg = GoogleManagerFull(); gg.authenticate()
+                        data['students'] = gg.get_students(course_id)
+                        print(f"Đã tải {len(data['students'])} học sinh vào đề thi.")
+                    except Exception as e:
+                        print(f"Lỗi tải danh sách học sinh: {e}")
+                        data['students'] = []
+
                     # --- HÀM XỬ LÝ KHI SERVER ĐÃ ONLINE ---
                     def on_server_online(public_url):
                         if not public_url: 
