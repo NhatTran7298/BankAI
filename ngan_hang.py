@@ -4958,26 +4958,73 @@ WEB_UI_TEMPLATE = """
         function showResult(data) {
             document.getElementById('final-score').innerText = data.score.toFixed(2);
 
-            // Disable inputs
-            document.querySelectorAll('.bubble, .tf-btn').forEach(el => el.style.pointerEvents = 'none');
+            // Disable inputs & Apply Review Mode Styles
+            document.querySelectorAll('.bubble, .tf-btn').forEach(el => {
+                el.style.pointerEvents = 'none';
+            });
             document.querySelectorAll('.short-inp').forEach(el => el.disabled = true);
 
             if (data.feedback && Array.isArray(data.feedback)) {
                 data.feedback.forEach(fb => {
+                    // 1. Highlight Markers & Show Keys
                     const mk = document.getElementById('m-'+fb.id);
-                    if (!mk) return;
-
-                    if (fb.type === 1 || fb.type === 3) {
-                         if (fb.correct) mk.innerHTML='✅';
-                         else mk.innerHTML='<span class="text-red-500 font-bold">'+fb.key+'</span>';
-                    } else if (fb.type === 2) {
-                         if (fb.sub_results) {
-                             for (const [sub, res] of Object.entries(fb.sub_results)) {
-                                 const kEl = document.getElementById('key-'+fb.id+'-'+sub);
-                                 if (kEl) kEl.innerText = res.key;
+                    if (mk) {
+                        if (fb.type === 1 || fb.type === 3) {
+                             if (fb.correct) mk.innerHTML='✅';
+                             else mk.innerHTML='<span class="text-red-500 font-bold">'+fb.key+'</span>';
+                        } else if (fb.type === 2) {
+                             if (fb.sub_results) {
+                                 for (const [sub, res] of Object.entries(fb.sub_results)) {
+                                     const kEl = document.getElementById('key-'+fb.id+'-'+sub);
+                                     if (kEl) kEl.innerText = res.key;
+                                 }
                              }
-                         }
-                         mk.innerHTML='<span class="text-blue-600">+'+(fb.score).toFixed(2)+'</span>';
+                             mk.innerHTML='<span class="text-blue-600">+'+(fb.score).toFixed(2)+'</span>';
+                        }
+                    }
+
+                    // 2. Highlight User Answers (Visual Review)
+                    if (fb.type === 1) { // MCQ
+                        const myAns = userAnswers[fb.id];
+                        if (myAns) {
+                            const btn = document.getElementById('btn-'+fb.id+'-'+myAns);
+                            if (btn) {
+                                btn.classList.remove('selected'); // Remove default blue
+                                btn.style.backgroundColor = fb.correct ? '#22c55e' : '#ef4444'; // Green or Red
+                                btn.style.color = 'white';
+                                btn.style.borderColor = 'transparent';
+                            }
+                        }
+                    } else if (fb.type === 2) { // True/False
+                        if (fb.sub_results) {
+                            for (const [sub, res] of Object.entries(fb.sub_results)) {
+                                const myAns = userAnswers[fb.id]?.[sub];
+                                if (myAns) {
+                                    // Tìm nút user đã chọn
+                                    const opts = document.querySelectorAll('#q-'+fb.id+' .tf-row');
+                                    // Tìm row chứa sub (a, b, c, d)
+                                    for(let r of opts) {
+                                        if(r.innerText.includes(sub+')')) {
+                                            const btns = r.querySelectorAll('.tf-btn');
+                                            btns.forEach(b => {
+                                                if(b.innerText === myAns) {
+                                                    b.className = 'tf-btn'; // Reset
+                                                    b.style.backgroundColor = res.correct ? '#22c55e' : '#ef4444';
+                                                    b.style.color = 'white';
+                                                    b.style.borderColor = 'transparent';
+                                                }
+                                            });
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    } else if (fb.type === 3) { // Short Ans
+                        const inp = document.querySelector('#q-'+fb.id+' input');
+                        if (inp) {
+                            inp.style.border = fb.correct ? '2px solid #22c55e' : '2px solid #ef4444';
+                            inp.style.backgroundColor = fb.correct ? '#f0fdf4' : '#fef2f2';
+                        }
                     }
                 });
             }
@@ -5309,7 +5356,13 @@ class WebServerThread(QThread):
         # 1. DIỆT SẠCH TIẾN TRÌNH NGROK CŨ
         try:
             print("🔄 Đang dọn dẹp các kết nối cũ...")
+            from pyngrok import ngrok
             ngrok.kill()
+
+            # [Fix] Force kill process nếu ngrok.kill() không sạch (Tránh lỗi ERR_NGROK_334)
+            if sys.platform != "win32":
+                os.system("pkill -9 ngrok")
+
             import time
             time.sleep(2)
         except:
@@ -5455,6 +5508,9 @@ class WebServerThread(QThread):
         try:
             from pyngrok import ngrok
             ngrok.kill()
+            # Force kill
+            if sys.platform != "win32":
+                os.system("pkill -9 ngrok")
         except:
             pass
 
