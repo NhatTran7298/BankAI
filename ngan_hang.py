@@ -776,7 +776,9 @@ LATEX_TEMPLATE = r"""
 % --- LỆNH BỔ TRỢ ---
 \usepackage{esvect}
 \def\vec{\vv}
-
+% [FIX] ĐỊNH NGHĨA HỆ PHƯƠNG TRÌNH (QUAN TRỌNG)
+\newcommand{\heva}[1]{\left\{\begin{aligned}#1\end{aligned}\right.}
+\newcommand{\hoac}[1]{\left[\begin{aligned}#1\end{aligned}\right.}
 \begin{document}
 % [FIX] Thêm null để đảm bảo luôn có ít nhất 1 object trên trang (tránh lỗi No output)
 \null
@@ -989,6 +991,51 @@ class AssignmentUploadWorker(QThread):
             self.finished.emit(False, f"Lỗi không xác định: {str(e)}")
 
 
+class CacheCleanupWorker(QThread):
+    def run(self):
+        try:
+            if os.path.exists(CACHE_DIR):
+                # Xóa các file cũ hơn 1 ngày hoặc xóa hết
+                for f in os.listdir(CACHE_DIR):
+                    if not f.endswith(".svg"): # Giữ lại SVG
+                        try:
+                            fp = os.path.join(CACHE_DIR, f)
+                            # Kiểm tra thời gian tạo, nếu muốn
+                            os.remove(fp)
+                        except: pass
+        except: pass
+
+def extract_metadata_from_tex(tex, q_type):
+    """Trích xuất Key và Lời giải từ nội dung LaTeX"""
+    key = "?"
+    explanation = ""
+    try:
+        # 1. Lấy lời giải
+        expl, _ = LatexParser.extract_command(tex, "loigiai")
+        if expl: explanation = expl.strip()
+        
+        # 2. Lấy Key
+        if q_type == 1: # MCQ
+            m = re.search(r"\[KEY:\s*([A-D])\]", tex, re.IGNORECASE)
+            if m: key = m.group(1).upper()
+            else:
+                args, _ = LatexParser.extract_multiple_args(tex, "choice")
+                for i, arg in enumerate(args):
+                    if "\\True" in arg: key = ['A','B','C','D'][i]; break
+        elif q_type == 2: # TF
+            args, _ = LatexParser.extract_multiple_args(tex, "choiceTF")
+            if args:
+                tf_res = {}
+                for i, arg in enumerate(args):
+                    sub = ['a','b','c','d'][i]
+                    tf_res[sub] = "Đ" if "\\True" in arg else "S"
+                key = tf_res
+        elif q_type == 3: # Short
+            k, _ = LatexParser.extract_command(tex, "shortans")
+            if k: key = k.strip()
+    except: pass
+    return key, explanation
+
 class ExamPreparerWorker(QThread):
     progress = pyqtSignal(str) 
     finished = pyqtSignal(bool, dict)
@@ -1066,11 +1113,22 @@ class ExamPreparerWorker(QThread):
                     
                     full_content.append(tex)
                     
-                    final_key = q.get('key', '?') or "?"
+                    # [Standardize] Extract Key & Explanation
+                    final_key = q.get('key')
+                    explanation = ""
+                    
+                    # Luôn kiểm tra lại từ TeX để lấy key/explanation chính xác nhất
+                    extracted_key, extracted_expl = extract_metadata_from_tex(tex, dang)
+                    if not final_key or final_key == '?':
+                        final_key = extracted_key
+                    if extracted_expl:
+                        explanation = extracted_expl
+
                     exam_matrix.append({
                         "id": idx + 1,
                         "type": dang,
-                        "key": final_key
+                        "key": final_key,
+                        "explanation": explanation
                     })
 
                 # 5. Compile PDF
@@ -1225,11 +1283,23 @@ class BatchAIWorker(QThread):
 
                 try:
                     new_c, key = self.ai.generate_safe(content_text)
-                    res[code].append({"idx": idx + 1, "content": new_c, "key": key, "orig_id": q.get('id', 0)})
+                    res[code].append({
+                        "idx": idx + 1, 
+                        "content": new_c, 
+                        "key": key, 
+                        "orig_id": q.get('id', 0),
+                        "dang": q.get('dang', 4) # Copy dang cau hoi
+                    })
                 except Exception as e:
                     print(f"❌ Error generating question {idx+1}: {e}")
                     # Thêm câu gốc vào nếu lỗi để không bị thiếu
-                    res[code].append({"idx": idx + 1, "content": content_text, "key": "A (Error)", "orig_id": q.get('id', 0)})
+                    res[code].append({
+                        "idx": idx + 1, 
+                        "content": content_text, 
+                        "key": "A (Error)", 
+                        "orig_id": q.get('id', 0),
+                        "dang": q.get('dang', 4)
+                    })
 
         self.finished.emit(res)
 
@@ -1378,7 +1448,9 @@ class ImageCompiler:
 \def\vec{\vv}
 \def\True{} 
 \renewcommand{\arraystretch}{1.2}
-
+% [FIX] ĐỊNH NGHĨA HỆ PHƯƠNG TRÌNH (QUAN TRỌNG)
+\newcommand{\heva}[1]{\left\{\begin{aligned}#1\end{aligned}\right.}
+\newcommand{\hoac}[1]{\left[\begin{aligned}#1\end{aligned}\right.}
 \begin{document}
 __CONTENT__
 \end{document}
@@ -1848,6 +1920,10 @@ class Backend:
     def get_unassigned(self, limit=100):
         return [dict(r) for r in self.conn.execute("SELECT * FROM questions WHERE id6 IS NULL OR id6 = '' LIMIT ?", (limit,)).fetchall()]
         
+    def get_exam_results(self):
+        """Lấy toàn bộ lịch sử thi"""
+        return self.conn.execute("SELECT * FROM exam_results ORDER BY submitted_at DESC").fetchall()
+
     # Tìm hàm này trong class Backend và thay thế toàn bộ
     def update_id6(self, qid, id6, g, s, c, l, b, d, new_content):
         """Cập nhật ID6 và Nội dung LaTeX mới vào Database"""
@@ -4498,7 +4574,9 @@ class TikzCompiler:
 \def\vec{\vv}             
 \def\overrightarrow{\vv}
 \renewcommand{\arraystretch}{1.2} 
-
+% [FIX] ĐỊNH NGHĨA HỆ PHƯƠNG TRÌNH (QUAN TRỌNG)
+\newcommand{\heva}[1]{\left\{\begin{aligned}#1\end{aligned}\right.}
+\newcommand{\hoac}[1]{\left[\begin{aligned}#1\end{aligned}\right.}
 % --- CẤU HÌNH TIKZ ---
 \tikzset{
     equal mark/.style={postaction={decorate, decoration={markings, mark=at position 0.5 with {\draw[line width=0.4pt] (-0.05,0.05)--(0.05,-0.05);}}}},
@@ -4762,8 +4840,21 @@ WEB_UI_TEMPLATE = """
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
     <title>HỆ THỐNG THI ONLINE</title>
     <script src="https://cdn.tailwindcss.com"></script>
+    <script>
+    window.MathJax = {
+      tex: {
+        inlineMath: [['$', '$'], ['\\(', '\\)']]
+      }
+    };
+    </script>
+    <script id="MathJax-script" async src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-mml-chtml.js"></script>
     <style>
         body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background: #f3f4f6; height: 100vh; overflow: hidden; }
+        /* [NEW] Review Mode Classes */
+        .user-correct { background-color: #22c55e !important; color: white !important; border-color: transparent !important; }
+        .user-wrong { background-color: #ef4444 !important; color: white !important; border-color: transparent !important; }
+        .system-correct { border: 2px solid #22c55e !important; color: #15803d !important; font-weight: bold; }
+        .system-key { font-size: 0.75rem; font-weight: bold; margin-left: 0.5rem; }
         #login-screen { position: fixed; inset: 0; background: #fff; z-index: 50; display: flex; flex-direction: column; align-items: center; justify-content: center; }
         .login-box { width: 90%; max-width: 400px; text-align: center; }
         #exam-ui { display: flex; height: 100%; flex-direction: column; }
@@ -4835,6 +4926,7 @@ WEB_UI_TEMPLATE = """
             <h2 class="text-3xl font-bold text-gray-800 mb-2">KẾT QUẢ</h2>
             <div class="text-5xl font-bold text-blue-600 my-6"><span id="final-score">0</span> điểm</div>
             <div class="text-sm text-green-600 font-bold mb-6">Đã lưu kết quả vào hệ thống!</div>
+            <button onclick="enterReviewMode()" class="bg-gray-500 hover:bg-gray-600 text-white font-bold py-2 px-6 rounded shadow">Xem lại bài làm</button>
         </div>
     </div>
 
@@ -4915,6 +5007,7 @@ WEB_UI_TEMPLATE = """
                     try {
                         var msg = JSON.parse(e.data);
                         if (msg.type === 'START_EXAM') startExam(msg.data);
+                        if (msg.type === 'SCORE_RESULT') showResult(msg.data);
                         if (msg.type === 'ERROR') { alert(msg.message); location.reload(); }
                     } catch(err) {}
                 };
@@ -4929,6 +5022,113 @@ WEB_UI_TEMPLATE = """
             if(data.pdf_filename) document.getElementById('pdf-frame').src = '/api/pdf/' + data.pdf_filename;
             if(data.duration) { timeLeft = parseInt(data.duration); startTimer(); }
             renderSheet(data.exam_matrix || []);
+        }
+        
+        var savedReviewData = null;
+
+        function closeModal() {
+            document.getElementById('score-modal').style.display = 'none';
+        }
+
+        function showResult(data) {
+            document.getElementById('final-score').innerText = data.score.toFixed(2);
+            document.getElementById('score-modal').style.display = 'flex';
+            savedReviewData = data.review_data;
+        }
+
+        function enterReviewMode() {
+            closeModal();
+            if (savedReviewData) renderReview(savedReviewData);
+        }
+
+        function renderReview(reviewData) {
+            // Disable inputs
+            document.querySelectorAll('.bubble, .tf-btn').forEach(el => el.style.pointerEvents = 'none');
+            document.querySelectorAll('.short-inp').forEach(el => el.disabled = true);
+
+            for (const [qid, info] of Object.entries(reviewData)) {
+                // 1. Highlight Marker (Correct/Wrong)
+                const mk = document.getElementById('m-'+qid);
+                if (mk) {
+                    if (info.type === 1 || info.type === 3) {
+                        mk.innerHTML = info.is_correct ? '✅' : '<span class="text-red-500 font-bold">'+info.correct_answer+'</span>';
+                    } else if (info.type === 2) {
+                        mk.innerHTML = info.is_correct ? '✅' : '<span class="text-blue-600">Chi tiết bên dưới</span>';
+                    }
+                }
+
+                // 2. Visual Feedback on Options
+                if (info.type === 1) { // MCQ
+                    // Highlight selected
+                    if (info.user_selected) {
+                        const btn = document.getElementById('btn-'+qid+'-'+info.user_selected);
+                        if (btn) {
+                            btn.classList.remove('selected');
+                            // [CHANGED] Use classes
+                            btn.classList.add(info.is_correct ? 'user-correct' : 'user-wrong');
+                        }
+                    }
+                    // If wrong, highlight correct answer
+                    if (!info.is_correct && info.correct_answer && info.correct_answer !== '?') {
+                        const correctBtn = document.getElementById('btn-'+qid+'-'+info.correct_answer);
+                        if (correctBtn) {
+                            // [CHANGED] Use classes
+                            correctBtn.classList.add('system-correct');
+                        }
+                    }
+                } else if (info.type === 2) { // True/False
+                    if (info.sub_details) {
+                        for (const [sub, subInfo] of Object.entries(info.sub_details)) {
+                            // Find row
+                            const row = Array.from(document.querySelectorAll('#q-'+qid+' .tf-row')).find(r => r.innerText.includes(sub+')'));
+                            if (row) {
+                                // Show Correct Key
+                                const keySpan = document.createElement('span');
+                                // [CHANGED] Use specific class for key
+                                keySpan.className = 'system-key ' + (subInfo.correct ? 'text-green-600' : 'text-red-500');
+                                keySpan.innerText = 'Đ.Án: ' + subInfo.key;
+                                row.querySelector('.tf-opts').appendChild(keySpan);
+
+                                // Highlight User Choice
+                                if (subInfo.user) {
+                                    const btns = row.querySelectorAll('.tf-btn');
+                                    btns.forEach(b => {
+                                        if (b.innerText === subInfo.user) {
+                                            // [CHANGED] Use classes
+                                            b.classList.add(subInfo.correct ? 'user-correct' : 'user-wrong');
+                                        }
+                                    });
+                                }
+                            }
+                        }
+                    }
+                } else if (info.type === 3) { // Short
+                    const inp = document.querySelector('#q-'+qid+' input');
+                    if (inp) {
+                        // [CHANGED] Use Tailwind classes for border/bg
+                        if (info.is_correct) {
+                            inp.classList.add('border-green-500', 'bg-green-50');
+                        } else {
+                            inp.classList.add('border-red-500', 'bg-red-50');
+                        }
+                    }
+                }
+
+                // 3. Show Explanation if available
+                if (info.explanation) {
+                    const qItem = document.getElementById('q-'+qid);
+                    if (qItem) {
+                        const explDiv = document.createElement('div');
+                        explDiv.className = 'mt-2 p-3 bg-yellow-50 border-l-4 border-yellow-400 text-sm text-gray-700';
+                        explDiv.innerHTML = '<b>Lời giải:</b> ' + info.explanation;
+                        qItem.appendChild(explDiv);
+                    }
+                }
+            }
+            // Trigger MathJax to render the new content
+            if (window.MathJax && MathJax.typesetPromise) {
+                MathJax.typesetPromise();
+            }
         }
 
         function renderSheet(matrix) {
@@ -4975,32 +5175,25 @@ WEB_UI_TEMPLATE = """
 
         window.submitExam = function() {
             if(!confirm("Nộp bài ngay?")) return;
-            isSubmitted = true; document.getElementById('btn-submit').style.display = 'none'; clearInterval(timerInt);
-            var examMatrix = examData.exam_matrix || [];
+            isSubmitted = true; 
+            document.getElementById('btn-submit').style.display = 'none'; 
+            clearInterval(timerInt);
             
-            const p1 = examMatrix.filter(q => q.type === 1); const valP1 = p1.length>0 ? (3.0/p1.length) : 0;
-            const p2 = examMatrix.filter(q => q.type === 2); const valP2 = p2.length>0 ? (4.0/p2.length) : 0;
-            const p3 = examMatrix.filter(q => q.type === 3); const valP3 = p3.length>0 ? (3.0/p3.length) : 0;
-            let s1=0, s2=0, s3=0;
-
-            examMatrix.forEach(q => {
-                const mk = document.getElementById('m-'+q.id); const ua = userAnswers[q.id];
-                if(q.type === 1) { if(ua === q.key) { s1+=valP1; mk.innerHTML='✅'; } else mk.innerHTML='<span class="text-red-500 font-bold">'+q.key+'</span>'; }
-                else if(q.type === 2) {
-                    let cc=0; ['a','b','c','d'].forEach(x=>{ if(ua && ua[x]===q.key[x]) cc++; document.getElementById('key-'+q.id+'-'+x).innerText=q.key[x]; });
-                    let r=0; if(cc==1) r=0.1; if(cc==2) r=0.25; if(cc==3) r=0.5; if(cc==4) r=1.0;
-                    s2 += valP2*r; mk.innerHTML='<span class="text-blue-600">+'+(valP2*r).toFixed(2)+'</span>';
-                }
-                else if(q.type === 3) { if(String(ua||"").replace(/\\s/g,"").toLowerCase().replace(",",".") === String(q.key||"").replace(/\\s/g,"").toLowerCase().replace(",",".")) { s3+=valP3; mk.innerHTML='✅'; } else mk.innerHTML='<span class="text-red-500 font-bold">'+q.key+'</span>'; }
-            });
-
-            var total = (s1+s2+s3).toFixed(2);
-            document.getElementById('final-score').innerText = total;
+            document.getElementById('final-score').innerText = "Đang chấm...";
             document.getElementById('score-modal').style.display = 'flex';
 
-            // Gửi cả ExamID để Server biết nộp cho đề nào
+            // Gửi Answers + Variant Code về Server để chấm
             if (ws && ws.readyState === WebSocket.OPEN) {
-                ws.send(JSON.stringify({ type: "SUBMIT", exam_id: examId, name: myName, email: myEmail, score: total, detail: userAnswers }));
+                ws.send(JSON.stringify({ 
+                    type: "SUBMIT", 
+                    exam_id: examId, 
+                    variant_code: examData.variant_code || "", 
+                    name: myName, 
+                    email: myEmail, 
+                    detail: userAnswers 
+                }));
+            } else {
+                alert("Mất kết nối với Server! Không thể gửi bài.");
             }
         };
     </script>
@@ -5089,6 +5282,124 @@ class WebServerThread(QThread):
         self.exam_dir = os.path.join(os.path.expanduser("~"), ".bankai_exams")
         if not os.path.exists(self.exam_dir): os.makedirs(self.exam_dir)
 
+    def find_closing_brace(self, text, open_pos):
+        balance = 1
+        i = open_pos + 1
+        n = len(text)
+        while i < n:
+            char = text[i]
+            if char == '\\' and i + 1 < n: i += 2; continue
+            if char == '{': balance += 1
+            elif char == '}': balance -= 1
+            if balance == 0: return i
+            i += 1
+        return -1
+
+    def extract_key_from_tex(self, tex, q_type):
+        if not tex: return None
+        if q_type == 1: # MCQ
+            m = re.search(r"\[KEY:\s*([A-D])\]", tex, re.IGNORECASE)
+            if m: return m.group(1).upper()
+            m = re.search(r"\\choice", tex)
+            if m:
+                curr = m.end()
+                for idx in range(4):
+                     while curr < len(tex) and tex[curr].isspace(): curr += 1
+                     if curr >= len(tex) or tex[curr] != '{': break
+                     end = self.find_closing_brace(tex, curr)
+                     if end == -1: break
+                     if "\\True" in tex[curr+1:end]: return ['A','B','C','D'][idx]
+                     curr = end + 1
+            return "?"
+        elif q_type == 2: # TF
+            m = re.search(r"\\choiceTF", tex)
+            res = {}
+            if m:
+                curr = m.end()
+                for sub in ['a','b','c','d']:
+                     while curr < len(tex) and tex[curr].isspace(): curr += 1
+                     if curr >= len(tex) or tex[curr] != '{': break
+                     end = self.find_closing_brace(tex, curr)
+                     if end == -1: break
+                     res[sub] = "Đ" if "\\True" in tex[curr+1:end] else "S"
+                     curr = end + 1
+            return res if res else None
+        elif q_type == 3: # Short
+            m = re.search(r"\\shortans", tex)
+            if m:
+                 curr = m.end()
+                 while curr < len(tex) and tex[curr].isspace(): curr += 1
+                 if curr < len(tex) and tex[curr] == '{':
+                     end = self.find_closing_brace(tex, curr)
+                     if end != -1: return tex[curr+1:end].strip()
+            return "?"
+        return None
+
+    def calculate_score(self, exam_matrix, user_answers):
+        s1 = s2 = s3 = 0.0
+        review_data = {} # Dictionary: question_id -> details
+        
+        p1 = [q for q in exam_matrix if q['type'] == 1]
+        p2 = [q for q in exam_matrix if q['type'] == 2]
+        p3 = [q for q in exam_matrix if q['type'] == 3]
+
+        val_p1 = (3.0 / len(p1)) if p1 else 0
+        val_p2 = (4.0 / len(p2)) if p2 else 0
+        val_p3 = (3.0 / len(p3)) if p3 else 0
+
+        for q in exam_matrix:
+            qid = str(q['id'])
+            ua = user_answers.get(qid)
+            
+            # Lấy Key và Explanation từ matrix (đã được chuẩn hóa bởi Worker)
+            q_key = q.get('key')
+            # Fallback nếu thiếu
+            if not q_key or q_key == '?':
+                content = q.get('content_tex') or q.get('content')
+                q_key = self.extract_key_from_tex(content, q['type'])
+            
+            q_type = q['type']
+            
+            # Cấu trúc dữ liệu Review chi tiết
+            item_review = {
+                "is_correct": False,
+                "user_selected": ua,
+                "correct_answer": q_key,
+                "explanation": q.get('explanation', ""),
+                "type": q_type
+            }
+
+            if q_type == 1:
+                if str(ua) == str(q_key):
+                    s1 += val_p1
+                    item_review['is_correct'] = True
+            elif q_type == 2:
+                correct_count = 0
+                sub_details = {}
+                if isinstance(q_key, dict):
+                    if not isinstance(ua, dict): ua = {}
+                    for sub in ['a','b','c','d']:
+                        k_val = q_key.get(sub)
+                        u_val = ua.get(sub)
+                        is_corr = (u_val == k_val)
+                        if is_corr: correct_count += 1
+                        sub_details[sub] = {'correct': is_corr, 'user': u_val, 'key': k_val}
+                
+                ratio = {1: 0.1, 2: 0.25, 3: 0.5, 4: 1.0}.get(correct_count, 0)
+                s2 += val_p2 * ratio
+                item_review['is_correct'] = (correct_count == 4)
+                item_review['sub_details'] = sub_details
+                
+            elif q_type == 3:
+                def norm(s): return str(s or "").replace(" ", "").replace(",", ".").lower()
+                if norm(ua) == norm(q_key):
+                    s3 += val_p3
+                    item_review['is_correct'] = True
+            
+            review_data[qid] = item_review
+
+        return round(s1 + s2 + s3, 2), review_data
+
     def set_exam_data(self, data):
         """Lưu dữ liệu đề thi hiện tại vào thread để server sử dụng"""
         self.exam_data = data
@@ -5154,7 +5465,13 @@ class WebServerThread(QThread):
         # 1. DIỆT SẠCH TIẾN TRÌNH NGROK CŨ
         try:
             print("🔄 Đang dọn dẹp các kết nối cũ...")
+            from pyngrok import ngrok
             ngrok.kill()
+            
+            # [Fix] Force kill process nếu ngrok.kill() không sạch (Tránh lỗi ERR_NGROK_334)
+            if sys.platform != "win32":
+                os.system("pkill -9 ngrok")
+            
             import time
             time.sleep(2)
         except:
@@ -5214,26 +5531,59 @@ class WebServerThread(QThread):
                                 payload['exam_matrix'] = selected_variant['exam_matrix']
                                 payload['variant_code'] = selected_variant['code']
                                 
+                            # [BẢO MẬT] Xóa Key trước khi gửi xuống Client
+                            sanitized_payload = payload.copy()
+                            if 'exam_matrix' in sanitized_payload:
+                                import copy
+                                sanitized_matrix = copy.deepcopy(sanitized_payload['exam_matrix'])
+                                for q in sanitized_matrix:
+                                    if 'key' in q: del q['key']
+                                sanitized_payload['exam_matrix'] = sanitized_matrix
+
                             # Gửi đúng đề thi đó cho học sinh
-                            await websocket.send_json({"type": "START_EXAM", "data": payload})
+                            await websocket.send_json({"type": "START_EXAM", "data": sanitized_payload})
                         else:
                             await websocket.send_json({"type": "ERROR", "message": "Không tìm thấy dữ liệu đề thi!"})
 
                     elif data.get('type') == 'SUBMIT':
                         exam_id = data.get('exam_id')
+                        variant_code = data.get('variant_code')
+                        user_answers = data.get('detail', {})
+                        
                         exam_data = self.load_exam_file(exam_id)
                         if exam_data:
-                            # Lưu kết quả
+                            # 1. Xác định Matrix chấm điểm (theo mã đề)
+                            target_matrix = exam_data.get('exam_matrix', [])
+                            variants = exam_data.get('variants', [])
+                            
+                            if variants and variant_code:
+                                for v in variants:
+                                    if str(v['code']) == str(variant_code):
+                                        target_matrix = v['exam_matrix']
+                                        break
+                            
+                            # 2. Chấm điểm Server-side
+                            final_score, review_data = self.calculate_score(target_matrix, user_answers)
+
+                            # 3. Lưu kết quả (Lưu full review data vào DB)
                             try:
                                 conn = sqlite3.connect(self.db_path)
                                 conn.execute("INSERT INTO exam_results (student_name, exam_title, score, detail) VALUES (?, ?, ?, ?)",
-                                    (f"{data['name']} ({data['email']})", exam_data.get('title'), data['score'], json.dumps(data['detail'])))
+                                    (f"{data['name']} ({data['email']})", exam_data.get('title'), final_score, json.dumps(review_data, ensure_ascii=False)))
                                 conn.commit(); conn.close()
-                                self.result_received.emit(f"{data['name']} - {exam_data.get('title')}", float(data['score']))
                                 
-                                # Đồng bộ Classroom
-                                self.sync_score(exam_data, data['name'], data['email'], data['score'])
+                                self.result_received.emit(f"{data['name']} - {exam_data.get('title')}", float(final_score))
+                                self.sync_score(exam_data, data['name'], data['email'], final_score)
                             except: pass
+                            
+                            # 4. Trả kết quả về cho Client
+                            await websocket.send_json({
+                                "type": "SCORE_RESULT", 
+                                "data": {
+                                    "score": final_score,
+                                    "review_data": review_data
+                                }
+                            })
 
             except: pass
 
@@ -5254,7 +5604,28 @@ class WebServerThread(QThread):
                 self.server_ready.emit(self.public_url)
         except Exception as e: self.server_ready.emit(f"Lỗi Ngrok: {e}")
 
-        uvicorn.run(app, host="0.0.0.0", port=self.port, log_level="critical", proxy_headers=True)
+        import uvicorn
+        config = uvicorn.Config(app, host="0.0.0.0", port=self.port, log_level="critical", proxy_headers=True)
+        self.server = uvicorn.Server(config)
+        self.server.run()
+
+    def stop(self):
+        """Dừng server và ngrok an toàn"""
+        if hasattr(self, 'server') and self.server:
+            self.server.should_exit = True
+        
+        try:
+            from pyngrok import ngrok
+            ngrok.kill()
+            # Force kill
+            if sys.platform != "win32":
+                os.system("pkill -9 ngrok")
+        except:
+            pass
+        
+        # Đợi tối đa 3 giây để luồng kết thúc, nếu không thì ép tắt
+        if not self.wait(3000):
+            self.terminate()
 # =============================================================================
 #  MODULE GOOGLE CLASSROOM & PDF (THÊM MỚI VÀO ĐÂY)
 # =============================================================================
@@ -6283,6 +6654,95 @@ class ExamConfigDialog(QDialog):
             "num_variants": self.inp_variants.value()
         }
 
+class HistoryDialog(QDialog):
+    """Hộp thoại xem Lịch sử kết quả thi"""
+    def __init__(self, backend, parent=None):
+        super().__init__(parent)
+        self.bk = backend
+        self.setWindowTitle("📜 Lịch sử kết quả thi")
+        self.setMinimumSize(900, 600)
+        self.setup_ui()
+        self.load_data()
+
+    def setup_ui(self):
+        layout = QVBoxLayout(self)
+        
+        # Header
+        h_layout = QHBoxLayout()
+        h_layout.addWidget(QLabel("<h2>DANH SÁCH BÀI THI ĐÃ NỘP</h2>"))
+        h_layout.addStretch()
+        
+        btn_refresh = QPushButton("🔄 Làm mới")
+        btn_refresh.clicked.connect(self.load_data)
+        h_layout.addWidget(btn_refresh)
+        
+        btn_export = QPushButton("💾 Xuất Excel/CSV")
+        btn_export.clicked.connect(self.export_csv)
+        h_layout.addWidget(btn_export)
+        
+        layout.addLayout(h_layout)
+        
+        # Table
+        self.table = QTableWidget()
+        self.table.setColumnCount(5)
+        self.table.setHorizontalHeaderLabels(["ID", "Thời gian", "Học sinh", "Đề thi", "Điểm số"])
+        self.table.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeMode.Stretch)
+        self.table.horizontalHeader().setSectionResizeMode(3, QHeaderView.ResizeMode.Stretch)
+        layout.addWidget(self.table)
+        
+        layout.addWidget(QLabel("<i>* Click vào tiêu đề cột để sắp xếp</i>"))
+
+    def load_data(self):
+        try:
+            results = self.bk.get_exam_results()
+            self.table.setRowCount(0)
+            
+            for row_idx, row_data in enumerate(results):
+                self.table.insertRow(row_idx)
+                # row_data is a Row object, access by index or key
+                # Schema: id, student_name, exam_title, score, detail, submitted_at
+                
+                self.table.setItem(row_idx, 0, QTableWidgetItem(str(row_data['id'])))
+                self.table.setItem(row_idx, 1, QTableWidgetItem(str(row_data['submitted_at'])))
+                self.table.setItem(row_idx, 2, QTableWidgetItem(str(row_data['student_name'])))
+                self.table.setItem(row_idx, 3, QTableWidgetItem(str(row_data['exam_title'])))
+                
+                score_item = QTableWidgetItem(str(row_data['score']))
+                score_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+                score_item.setFont(QFont("Arial", 11, QFont.Weight.Bold))
+                
+                try:
+                    s = float(row_data['score'])
+                    if s >= 8.0: score_item.setForeground(QColor("green"))
+                    elif s < 5.0: score_item.setForeground(QColor("red"))
+                    else: score_item.setForeground(QColor("blue"))
+                except: pass
+                
+                self.table.setItem(row_idx, 4, score_item)
+                
+        except Exception as e:
+            QMessageBox.warning(self, "Lỗi tải dữ liệu", str(e))
+
+    def export_csv(self):
+        path, _ = QFileDialog.getSaveFileName(self, "Xuất file CSV", "Lich_Su_Thi.csv", "CSV Files (*.csv)")
+        if not path: return
+        
+        try:
+            import csv
+            with open(path, 'w', newline='', encoding='utf-8-sig') as f:
+                writer = csv.writer(f)
+                writer.writerow(["ID", "Thời gian", "Học sinh", "Đề thi", "Điểm số"])
+                
+                for r in range(self.table.rowCount()):
+                    row_data = []
+                    for c in range(self.table.columnCount()):
+                        item = self.table.item(r, c)
+                        row_data.append(item.text() if item else "")
+                    writer.writerow(row_data)
+            
+            QMessageBox.information(self, "Thành công", f"Đã xuất file: {path}")
+        except Exception as e:
+            QMessageBox.critical(self, "Lỗi xuất file", str(e))
 class ExamMonitorDialog(QDialog):
     """Màn hình GIÁM SÁT & GIAO BÀI"""
     def __init__(self, web_thread, parent=None):
@@ -7016,6 +7476,11 @@ class MainApp(QMainWindow):
         super().__init__()
         self.bk = Backend()
         self.ai = AIEngine(api_key)
+        
+        # Dọn dẹp cache ngầm
+        self.cleanup_worker = CacheCleanupWorker()
+        self.cleanup_worker.start()
+        
         self.current_exam = []
         self.generated_exams = {}
         self.setWindowTitle("BankAI Pro - 2025 Matrix Edition")
@@ -7202,6 +7667,7 @@ class MainApp(QMainWindow):
         
         menu.addAction("📖  Hướng dẫn sử dụng", self.open_help)
         menu.addSeparator()
+        menu.addAction("📜  Lịch sử Thi Online", self.open_history)
         menu.addAction("🏷️  Gán ID6 Tự động", self.show_id6)
         menu.addAction("🖼️  Quản lý Kho Hình ảnh", self.open_image_manager)
         menu.addAction("🧹  Làm sạch & Check Lỗi", self.open_file_cleaner)
@@ -8365,6 +8831,16 @@ class MainApp(QMainWindow):
         
         return questions
 
+    def closeEvent(self, event):
+        """Xử lý khi đóng ứng dụng"""
+        # Không chạy cleanup_cache đồng bộ nữa để tránh treo
+        
+        if hasattr(self, 'web_thread') and self.web_thread.isRunning():
+            # Stop thread với timeout (đã xử lý trong WebServerThread.stop)
+            self.web_thread.stop()
+            
+        event.accept()
+
     def toggle_web_server(self):
         """Bật/Tắt Web Server - Fix lỗi tự chạy khi chưa bấm OK"""
         if self.btn_web.isChecked():
@@ -8451,6 +8927,9 @@ class MainApp(QMainWindow):
 
         else:
             # Tắt Server
+            if hasattr(self, 'web_thread') and self.web_thread.isRunning():
+                self.web_thread.stop()
+            
             self.btn_web.setText("🌍 Bật Thi Online")
             self.btn_web.setStyleSheet("background-color: rgba(255, 255, 255, 0.2); color: white;")
             QMessageBox.information(self, "Đã tắt", "Đã đóng phòng thi ảo.")
@@ -8495,6 +8974,11 @@ class MainApp(QMainWindow):
         # 2. Mở Dialog (Truyền list object vào - QUAN TRỌNG)
         # Class ClassroomDialog mới sẽ nhận danh sách này để xử lý từng câu
         dlg = ClassroomDialog(questions_objs, self) 
+        dlg.exec()
+
+    def open_history(self):
+        """Mở lịch sử thi"""
+        dlg = HistoryDialog(self.bk, self)
         dlg.exec()
 
     def open_help(self):
@@ -8821,6 +9305,23 @@ class MainApp(QMainWindow):
         elif hasattr(self, 'current_exam') and self.current_exam:
             questions = self.current_exam
             source = "matrix"
+
+        # Trường hợp 3: Đang ở Tab "AI" (Index 3)
+        elif current_idx == 3:
+            if hasattr(self, 'gen_res') and self.gen_res:
+                # Lấy mã đề đầu tiên
+                first_code = list(self.gen_res.keys())[0]
+                ai_qs = self.gen_res[first_code]
+                converted = []
+                for q in ai_qs:
+                    converted.append({
+                        'id': q['idx'],
+                        'content_tex': q['content'],
+                        'key': q['key'],
+                        'dang': q.get('dang', 4)
+                    })
+                questions = converted
+                source = "ai_generated"
             
         # Nếu không tìm thấy ở tab hiện tại nhưng danh sách soạn thảo có dữ liệu
         if not questions and hasattr(self.exam_lst, 'get_all_questions'):
