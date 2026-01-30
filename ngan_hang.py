@@ -4836,6 +4836,11 @@ WEB_UI_TEMPLATE = """
     <script src="https://cdn.tailwindcss.com"></script>
     <style>
         body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background: #f3f4f6; height: 100vh; overflow: hidden; }
+        /* [NEW] Review Mode Classes */
+        .user-correct { background-color: #22c55e !important; color: white !important; border-color: transparent !important; }
+        .user-wrong { background-color: #ef4444 !important; color: white !important; border-color: transparent !important; }
+        .system-correct { border: 2px solid #22c55e !important; color: #15803d !important; font-weight: bold; }
+        .system-key { font-size: 0.75rem; font-weight: bold; margin-left: 0.5rem; }
         #login-screen { position: fixed; inset: 0; background: #fff; z-index: 50; display: flex; flex-direction: column; align-items: center; justify-content: center; }
         .login-box { width: 90%; max-width: 400px; text-align: center; }
         #exam-ui { display: flex; height: 100%; flex-direction: column; }
@@ -4907,7 +4912,7 @@ WEB_UI_TEMPLATE = """
             <h2 class="text-3xl font-bold text-gray-800 mb-2">KẾT QUẢ</h2>
             <div class="text-5xl font-bold text-blue-600 my-6"><span id="final-score">0</span> điểm</div>
             <div class="text-sm text-green-600 font-bold mb-6">Đã lưu kết quả vào hệ thống!</div>
-            <button onclick="closeModal()" class="bg-gray-500 hover:bg-gray-600 text-white font-bold py-2 px-6 rounded shadow">Xem lại bài làm</button>
+            <button onclick="enterReviewMode()" class="bg-gray-500 hover:bg-gray-600 text-white font-bold py-2 px-6 rounded shadow">Xem lại bài làm</button>
         </div>
     </div>
 
@@ -5045,18 +5050,16 @@ WEB_UI_TEMPLATE = """
                         const btn = document.getElementById('btn-'+qid+'-'+info.user_selected);
                         if (btn) {
                             btn.classList.remove('selected');
-                            btn.style.backgroundColor = info.is_correct ? '#22c55e' : '#ef4444'; // Green / Red
-                            btn.style.color = 'white';
-                            btn.style.borderColor = 'transparent';
+                            // [CHANGED] Use classes
+                            btn.classList.add(info.is_correct ? 'user-correct' : 'user-wrong');
                         }
                     }
                     // If wrong, highlight correct answer
                     if (!info.is_correct && info.correct_answer && info.correct_answer !== '?') {
                         const correctBtn = document.getElementById('btn-'+qid+'-'+info.correct_answer);
                         if (correctBtn) {
-                            correctBtn.style.border = '2px solid #22c55e'; // Green Border
-                            correctBtn.style.color = '#15803d';
-                            correctBtn.style.fontWeight = 'bold';
+                            // [CHANGED] Use classes
+                            correctBtn.classList.add('system-correct');
                         }
                     }
                 } else if (info.type === 2) { // True/False
@@ -5067,7 +5070,8 @@ WEB_UI_TEMPLATE = """
                             if (row) {
                                 // Show Correct Key
                                 const keySpan = document.createElement('span');
-                                keySpan.className = 'ml-2 text-xs font-bold ' + (subInfo.correct ? 'text-green-600' : 'text-red-500');
+                                // [CHANGED] Use specific class for key
+                                keySpan.className = 'system-key ' + (subInfo.correct ? 'text-green-600' : 'text-red-500');
                                 keySpan.innerText = 'Đ.Án: ' + subInfo.key;
                                 row.querySelector('.tf-opts').appendChild(keySpan);
 
@@ -5076,9 +5080,8 @@ WEB_UI_TEMPLATE = """
                                     const btns = row.querySelectorAll('.tf-btn');
                                     btns.forEach(b => {
                                         if (b.innerText === subInfo.user) {
-                                            b.style.backgroundColor = subInfo.correct ? '#22c55e' : '#ef4444';
-                                            b.style.color = 'white';
-                                            b.style.borderColor = 'transparent';
+                                            // [CHANGED] Use classes
+                                            b.classList.add(subInfo.correct ? 'user-correct' : 'user-wrong');
                                         }
                                     });
                                 }
@@ -5088,8 +5091,12 @@ WEB_UI_TEMPLATE = """
                 } else if (info.type === 3) { // Short
                     const inp = document.querySelector('#q-'+qid+' input');
                     if (inp) {
-                        inp.style.border = info.is_correct ? '2px solid #22c55e' : '2px solid #ef4444';
-                        inp.style.backgroundColor = info.is_correct ? '#f0fdf4' : '#fef2f2';
+                        // [CHANGED] Use Tailwind classes for border/bg
+                        if (info.is_correct) {
+                            inp.classList.add('border-green-500', 'bg-green-50');
+                        } else {
+                            inp.classList.add('border-red-500', 'bg-red-50');
+                        }
                     }
                 }
 
