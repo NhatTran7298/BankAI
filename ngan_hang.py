@@ -4834,6 +4834,14 @@ WEB_UI_TEMPLATE = """
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
     <title>HỆ THỐNG THI ONLINE</title>
     <script src="https://cdn.tailwindcss.com"></script>
+    <script>
+    window.MathJax = {
+      tex: {
+        inlineMath: [['$', '$'], ['\\(', '\\)']]
+      }
+    };
+    </script>
+    <script id="MathJax-script" async src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-mml-chtml.js"></script>
     <style>
         body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background: #f3f4f6; height: 100vh; overflow: hidden; }
         /* [NEW] Review Mode Classes */
@@ -5110,6 +5118,10 @@ WEB_UI_TEMPLATE = """
                         qItem.appendChild(explDiv);
                     }
                 }
+            }
+            // Trigger MathJax to render the new content
+            if (window.MathJax && MathJax.typesetPromise) {
+                MathJax.typesetPromise();
             }
         }
 
