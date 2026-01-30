@@ -4915,6 +4915,7 @@ WEB_UI_TEMPLATE = """
                     try {
                         var msg = JSON.parse(e.data);
                         if (msg.type === 'START_EXAM') startExam(msg.data);
+                        if (msg.type === 'SCORE_RESULT') showResult(msg.data);
                         if (msg.type === 'ERROR') { alert(msg.message); location.reload(); }
                     } catch(err) {}
                 };
@@ -4929,6 +4930,30 @@ WEB_UI_TEMPLATE = """
             if(data.pdf_filename) document.getElementById('pdf-frame').src = '/api/pdf/' + data.pdf_filename;
             if(data.duration) { timeLeft = parseInt(data.duration); startTimer(); }
             renderSheet(data.exam_matrix || []);
+        }
+
+        function showResult(data) {
+            document.getElementById('final-score').innerText = data.score.toFixed(2);
+
+            if (data.feedback && Array.isArray(data.feedback)) {
+                data.feedback.forEach(fb => {
+                    const mk = document.getElementById('m-'+fb.id);
+                    if (!mk) return;
+
+                    if (fb.type === 1 || fb.type === 3) {
+                         if (fb.correct) mk.innerHTML='✅';
+                         else mk.innerHTML='<span class="text-red-500 font-bold">'+fb.key+'</span>';
+                    } else if (fb.type === 2) {
+                         if (fb.sub_results) {
+                             for (const [sub, res] of Object.entries(fb.sub_results)) {
+                                 const kEl = document.getElementById('key-'+fb.id+'-'+sub);
+                                 if (kEl) kEl.innerText = res.key;
+                             }
+                         }
+                         mk.innerHTML='<span class="text-blue-600">+'+(fb.score).toFixed(2)+'</span>';
+                    }
+                });
+            }
         }
 
         function renderSheet(matrix) {
@@ -4975,32 +5000,25 @@ WEB_UI_TEMPLATE = """
 
         window.submitExam = function() {
             if(!confirm("Nộp bài ngay?")) return;
-            isSubmitted = true; document.getElementById('btn-submit').style.display = 'none'; clearInterval(timerInt);
-            var examMatrix = examData.exam_matrix || [];
-            
-            const p1 = examMatrix.filter(q => q.type === 1); const valP1 = p1.length>0 ? (3.0/p1.length) : 0;
-            const p2 = examMatrix.filter(q => q.type === 2); const valP2 = p2.length>0 ? (4.0/p2.length) : 0;
-            const p3 = examMatrix.filter(q => q.type === 3); const valP3 = p3.length>0 ? (3.0/p3.length) : 0;
-            let s1=0, s2=0, s3=0;
+            isSubmitted = true;
+            document.getElementById('btn-submit').style.display = 'none';
+            clearInterval(timerInt);
 
-            examMatrix.forEach(q => {
-                const mk = document.getElementById('m-'+q.id); const ua = userAnswers[q.id];
-                if(q.type === 1) { if(ua === q.key) { s1+=valP1; mk.innerHTML='✅'; } else mk.innerHTML='<span class="text-red-500 font-bold">'+q.key+'</span>'; }
-                else if(q.type === 2) {
-                    let cc=0; ['a','b','c','d'].forEach(x=>{ if(ua && ua[x]===q.key[x]) cc++; document.getElementById('key-'+q.id+'-'+x).innerText=q.key[x]; });
-                    let r=0; if(cc==1) r=0.1; if(cc==2) r=0.25; if(cc==3) r=0.5; if(cc==4) r=1.0;
-                    s2 += valP2*r; mk.innerHTML='<span class="text-blue-600">+'+(valP2*r).toFixed(2)+'</span>';
-                }
-                else if(q.type === 3) { if(String(ua||"").replace(/\\s/g,"").toLowerCase().replace(",",".") === String(q.key||"").replace(/\\s/g,"").toLowerCase().replace(",",".")) { s3+=valP3; mk.innerHTML='✅'; } else mk.innerHTML='<span class="text-red-500 font-bold">'+q.key+'</span>'; }
-            });
-
-            var total = (s1+s2+s3).toFixed(2);
-            document.getElementById('final-score').innerText = total;
+            document.getElementById('final-score').innerText = "Đang chấm...";
             document.getElementById('score-modal').style.display = 'flex';
 
-            // Gửi cả ExamID để Server biết nộp cho đề nào
+            // Gửi Answers + Variant Code về Server để chấm
             if (ws && ws.readyState === WebSocket.OPEN) {
-                ws.send(JSON.stringify({ type: "SUBMIT", exam_id: examId, name: myName, email: myEmail, score: total, detail: userAnswers }));
+                ws.send(JSON.stringify({
+                    type: "SUBMIT",
+                    exam_id: examId,
+                    variant_code: examData.variant_code || "",
+                    name: myName,
+                    email: myEmail,
+                    detail: userAnswers
+                }));
+            } else {
+                alert("Mất kết nối với Server! Không thể gửi bài.");
             }
         };
     </script>
@@ -5088,6 +5106,116 @@ class WebServerThread(QThread):
         # Thư mục chứa các file đề thi riêng biệt
         self.exam_dir = os.path.join(os.path.expanduser("~"), ".bankai_exams")
         if not os.path.exists(self.exam_dir): os.makedirs(self.exam_dir)
+
+    def find_closing_brace(self, text, open_pos):
+        balance = 1
+        i = open_pos + 1
+        n = len(text)
+        while i < n:
+            char = text[i]
+            if char == '\\' and i + 1 < n: i += 2; continue
+            if char == '{': balance += 1
+            elif char == '}': balance -= 1
+            if balance == 0: return i
+            i += 1
+        return -1
+
+    def extract_key_from_tex(self, tex, q_type):
+        if not tex: return None
+        if q_type == 1: # MCQ
+            m = re.search(r"\[KEY:\s*([A-D])\]", tex, re.IGNORECASE)
+            if m: return m.group(1).upper()
+            m = re.search(r"\\choice", tex)
+            if m:
+                curr = m.end()
+                for idx in range(4):
+                     while curr < len(tex) and tex[curr].isspace(): curr += 1
+                     if curr >= len(tex) or tex[curr] != '{': break
+                     end = self.find_closing_brace(tex, curr)
+                     if end == -1: break
+                     if "\\True" in tex[curr+1:end]: return ['A','B','C','D'][idx]
+                     curr = end + 1
+            return "?"
+        elif q_type == 2: # TF
+            m = re.search(r"\\choiceTF", tex)
+            res = {}
+            if m:
+                curr = m.end()
+                for sub in ['a','b','c','d']:
+                     while curr < len(tex) and tex[curr].isspace(): curr += 1
+                     if curr >= len(tex) or tex[curr] != '{': break
+                     end = self.find_closing_brace(tex, curr)
+                     if end == -1: break
+                     res[sub] = "Đ" if "\\True" in tex[curr+1:end] else "S"
+                     curr = end + 1
+            return res if res else None
+        elif q_type == 3: # Short
+            m = re.search(r"\\shortans", tex)
+            if m:
+                 curr = m.end()
+                 while curr < len(tex) and tex[curr].isspace(): curr += 1
+                 if curr < len(tex) and tex[curr] == '{':
+                     end = self.find_closing_brace(tex, curr)
+                     if end != -1: return tex[curr+1:end].strip()
+            return "?"
+        return None
+
+    def calculate_score(self, exam_matrix, user_answers):
+        s1 = s2 = s3 = 0.0
+        feedback = []
+
+        p1 = [q for q in exam_matrix if q['type'] == 1]
+        p2 = [q for q in exam_matrix if q['type'] == 2]
+        p3 = [q for q in exam_matrix if q['type'] == 3]
+
+        val_p1 = (3.0 / len(p1)) if p1 else 0
+        val_p2 = (4.0 / len(p2)) if p2 else 0
+        val_p3 = (3.0 / len(p3)) if p3 else 0
+
+        for q in exam_matrix:
+            qid = str(q['id'])
+            ua = user_answers.get(qid)
+
+            # [QUAN TRỌNG] Lấy Key từ Content TeX nếu trong matrix chưa có (do chưa qua mixer)
+            q_key = q.get('key')
+            if not q_key or q_key == '?':
+                content = q.get('content_tex') or q.get('content')
+                q_key = self.extract_key_from_tex(content, q['type'])
+
+            q_type = q['type']
+            fb_item = {'id': q['id'], 'type': q_type, 'correct': False, 'key': q_key, 'score': 0}
+
+            if q_type == 1:
+                if str(ua) == str(q_key):
+                    s1 += val_p1
+                    fb_item['correct'] = True
+                    fb_item['score'] = val_p1
+            elif q_type == 2:
+                correct_count = 0
+                sub_results = {}
+                if isinstance(q_key, dict):
+                    for sub in ['a','b','c','d']:
+                        k_val = q_key.get(sub)
+                        u_val = ua.get(sub) if isinstance(ua, dict) else None
+                        is_corr = (u_val == k_val)
+                        if is_corr: correct_count += 1
+                        sub_results[sub] = {'correct': is_corr, 'key': k_val}
+
+                ratio = {1: 0.1, 2: 0.25, 3: 0.5, 4: 1.0}.get(correct_count, 0)
+                score_earned = val_p2 * ratio
+                s2 += score_earned
+                fb_item['score'] = score_earned
+                fb_item['sub_results'] = sub_results
+            elif q_type == 3:
+                def norm(s): return str(s or "").replace(" ", "").replace(",", ".").lower()
+                if norm(ua) == norm(q_key):
+                    s3 += val_p3
+                    fb_item['correct'] = True
+                    fb_item['score'] = val_p3
+
+            feedback.append(fb_item)
+
+        return round(s1 + s2 + s3, 2), feedback
 
     def set_exam_data(self, data):
         """Lưu dữ liệu đề thi hiện tại vào thread để server sử dụng"""
@@ -5214,26 +5342,59 @@ class WebServerThread(QThread):
                                 payload['exam_matrix'] = selected_variant['exam_matrix']
                                 payload['variant_code'] = selected_variant['code']
                                 
+                            # [BẢO MẬT] Xóa Key trước khi gửi xuống Client
+                            sanitized_payload = payload.copy()
+                            if 'exam_matrix' in sanitized_payload:
+                                import copy
+                                sanitized_matrix = copy.deepcopy(sanitized_payload['exam_matrix'])
+                                for q in sanitized_matrix:
+                                    if 'key' in q: del q['key']
+                                sanitized_payload['exam_matrix'] = sanitized_matrix
+
                             # Gửi đúng đề thi đó cho học sinh
-                            await websocket.send_json({"type": "START_EXAM", "data": payload})
+                            await websocket.send_json({"type": "START_EXAM", "data": sanitized_payload})
                         else:
                             await websocket.send_json({"type": "ERROR", "message": "Không tìm thấy dữ liệu đề thi!"})
 
                     elif data.get('type') == 'SUBMIT':
                         exam_id = data.get('exam_id')
+                        variant_code = data.get('variant_code')
+                        user_answers = data.get('detail', {})
+
                         exam_data = self.load_exam_file(exam_id)
                         if exam_data:
-                            # Lưu kết quả
+                            # 1. Xác định Matrix chấm điểm (theo mã đề)
+                            target_matrix = exam_data.get('exam_matrix', [])
+                            variants = exam_data.get('variants', [])
+
+                            if variants and variant_code:
+                                for v in variants:
+                                    if str(v['code']) == str(variant_code):
+                                        target_matrix = v['exam_matrix']
+                                        break
+
+                            # 2. Chấm điểm Server-side
+                            final_score, feedback = self.calculate_score(target_matrix, user_answers)
+
+                            # 3. Lưu kết quả
                             try:
                                 conn = sqlite3.connect(self.db_path)
                                 conn.execute("INSERT INTO exam_results (student_name, exam_title, score, detail) VALUES (?, ?, ?, ?)",
-                                    (f"{data['name']} ({data['email']})", exam_data.get('title'), data['score'], json.dumps(data['detail'])))
+                                    (f"{data['name']} ({data['email']})", exam_data.get('title'), final_score, json.dumps(user_answers)))
                                 conn.commit(); conn.close()
-                                self.result_received.emit(f"{data['name']} - {exam_data.get('title')}", float(data['score']))
                                 
-                                # Đồng bộ Classroom
-                                self.sync_score(exam_data, data['name'], data['email'], data['score'])
+                                self.result_received.emit(f"{data['name']} - {exam_data.get('title')}", float(final_score))
+                                self.sync_score(exam_data, data['name'], data['email'], final_score)
                             except: pass
+
+                            # 4. Trả kết quả về cho Client
+                            await websocket.send_json({
+                                "type": "SCORE_RESULT",
+                                "data": {
+                                    "score": final_score,
+                                    "feedback": feedback
+                                }
+                            })
 
             except: pass
 
