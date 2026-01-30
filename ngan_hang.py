@@ -1003,6 +1003,37 @@ class CacheCleanupWorker(QThread):
                         except: pass
         except: pass
 
+def extract_metadata_from_tex(tex, q_type):
+    """Trích xuất Key và Lời giải từ nội dung LaTeX"""
+    key = "?"
+    explanation = ""
+    try:
+        # 1. Lấy lời giải
+        expl, _ = LatexParser.extract_command(tex, "loigiai")
+        if expl: explanation = expl.strip()
+
+        # 2. Lấy Key
+        if q_type == 1: # MCQ
+            m = re.search(r"\[KEY:\s*([A-D])\]", tex, re.IGNORECASE)
+            if m: key = m.group(1).upper()
+            else:
+                args, _ = LatexParser.extract_multiple_args(tex, "choice")
+                for i, arg in enumerate(args):
+                    if "\\True" in arg: key = ['A','B','C','D'][i]; break
+        elif q_type == 2: # TF
+            args, _ = LatexParser.extract_multiple_args(tex, "choiceTF")
+            if args:
+                tf_res = {}
+                for i, arg in enumerate(args):
+                    sub = ['a','b','c','d'][i]
+                    tf_res[sub] = "Đ" if "\\True" in arg else "S"
+                key = tf_res
+        elif q_type == 3: # Short
+            k, _ = LatexParser.extract_command(tex, "shortans")
+            if k: key = k.strip()
+    except: pass
+    return key, explanation
+
 class ExamPreparerWorker(QThread):
     progress = pyqtSignal(str) 
     finished = pyqtSignal(bool, dict)
@@ -1080,11 +1111,22 @@ class ExamPreparerWorker(QThread):
                     
                     full_content.append(tex)
                     
-                    final_key = q.get('key', '?') or "?"
+                    # [Standardize] Extract Key & Explanation
+                    final_key = q.get('key')
+                    explanation = ""
+
+                    # Luôn kiểm tra lại từ TeX để lấy key/explanation chính xác nhất
+                    extracted_key, extracted_expl = extract_metadata_from_tex(tex, dang)
+                    if not final_key or final_key == '?':
+                        final_key = extracted_key
+                    if extracted_expl:
+                        explanation = extracted_expl
+
                     exam_matrix.append({
                         "id": idx + 1,
                         "type": dang,
-                        "key": final_key
+                        "key": final_key,
+                        "explanation": explanation
                     })
 
                 # 5. Compile PDF
@@ -1239,11 +1281,23 @@ class BatchAIWorker(QThread):
 
                 try:
                     new_c, key = self.ai.generate_safe(content_text)
-                    res[code].append({"idx": idx + 1, "content": new_c, "key": key, "orig_id": q.get('id', 0)})
+                    res[code].append({
+                        "idx": idx + 1,
+                        "content": new_c,
+                        "key": key,
+                        "orig_id": q.get('id', 0),
+                        "dang": q.get('dang', 4) # Copy dang cau hoi
+                    })
                 except Exception as e:
                     print(f"❌ Error generating question {idx+1}: {e}")
                     # Thêm câu gốc vào nếu lỗi để không bị thiếu
-                    res[code].append({"idx": idx + 1, "content": content_text, "key": "A (Error)", "orig_id": q.get('id', 0)})
+                    res[code].append({
+                        "idx": idx + 1,
+                        "content": content_text,
+                        "key": "A (Error)",
+                        "orig_id": q.get('id', 0),
+                        "dang": q.get('dang', 4)
+                    })
 
         self.finished.emit(res)
 
@@ -4951,82 +5005,104 @@ WEB_UI_TEMPLATE = """
             renderSheet(data.exam_matrix || []);
         }
 
+        var savedReviewData = null;
+
         function closeModal() {
             document.getElementById('score-modal').style.display = 'none';
         }
 
         function showResult(data) {
             document.getElementById('final-score').innerText = data.score.toFixed(2);
+            document.getElementById('score-modal').style.display = 'flex';
+            savedReviewData = data.review_data;
+        }
 
-            // Disable inputs & Apply Review Mode Styles
-            document.querySelectorAll('.bubble, .tf-btn').forEach(el => {
-                el.style.pointerEvents = 'none';
-            });
+        function enterReviewMode() {
+            closeModal();
+            if (savedReviewData) renderReview(savedReviewData);
+        }
+
+        function renderReview(reviewData) {
+            // Disable inputs
+            document.querySelectorAll('.bubble, .tf-btn').forEach(el => el.style.pointerEvents = 'none');
             document.querySelectorAll('.short-inp').forEach(el => el.disabled = true);
 
-            if (data.feedback && Array.isArray(data.feedback)) {
-                data.feedback.forEach(fb => {
-                    // 1. Highlight Markers & Show Keys
-                    const mk = document.getElementById('m-'+fb.id);
-                    if (mk) {
-                        if (fb.type === 1 || fb.type === 3) {
-                             if (fb.correct) mk.innerHTML='✅';
-                             else mk.innerHTML='<span class="text-red-500 font-bold">'+fb.key+'</span>';
-                        } else if (fb.type === 2) {
-                             if (fb.sub_results) {
-                                 for (const [sub, res] of Object.entries(fb.sub_results)) {
-                                     const kEl = document.getElementById('key-'+fb.id+'-'+sub);
-                                     if (kEl) kEl.innerText = res.key;
-                                 }
-                             }
-                             mk.innerHTML='<span class="text-blue-600">+'+(fb.score).toFixed(2)+'</span>';
+            for (const [qid, info] of Object.entries(reviewData)) {
+                // 1. Highlight Marker (Correct/Wrong)
+                const mk = document.getElementById('m-'+qid);
+                if (mk) {
+                    if (info.type === 1 || info.type === 3) {
+                        mk.innerHTML = info.is_correct ? '✅' : '<span class="text-red-500 font-bold">'+info.correct_answer+'</span>';
+                    } else if (info.type === 2) {
+                        mk.innerHTML = info.is_correct ? '✅' : '<span class="text-blue-600">Chi tiết bên dưới</span>';
+                    }
+                }
+
+                // 2. Visual Feedback on Options
+                if (info.type === 1) { // MCQ
+                    // Highlight selected
+                    if (info.user_selected) {
+                        const btn = document.getElementById('btn-'+qid+'-'+info.user_selected);
+                        if (btn) {
+                            btn.classList.remove('selected');
+                            btn.style.backgroundColor = info.is_correct ? '#22c55e' : '#ef4444'; // Green / Red
+                            btn.style.color = 'white';
+                            btn.style.borderColor = 'transparent';
                         }
                     }
-
-                    // 2. Highlight User Answers (Visual Review)
-                    if (fb.type === 1) { // MCQ
-                        const myAns = userAnswers[fb.id];
-                        if (myAns) {
-                            const btn = document.getElementById('btn-'+fb.id+'-'+myAns);
-                            if (btn) {
-                                btn.classList.remove('selected'); // Remove default blue
-                                btn.style.backgroundColor = fb.correct ? '#22c55e' : '#ef4444'; // Green or Red
-                                btn.style.color = 'white';
-                                btn.style.borderColor = 'transparent';
-                            }
+                    // If wrong, highlight correct answer
+                    if (!info.is_correct && info.correct_answer && info.correct_answer !== '?') {
+                        const correctBtn = document.getElementById('btn-'+qid+'-'+info.correct_answer);
+                        if (correctBtn) {
+                            correctBtn.style.border = '2px solid #22c55e'; // Green Border
+                            correctBtn.style.color = '#15803d';
+                            correctBtn.style.fontWeight = 'bold';
                         }
-                    } else if (fb.type === 2) { // True/False
-                        if (fb.sub_results) {
-                            for (const [sub, res] of Object.entries(fb.sub_results)) {
-                                const myAns = userAnswers[fb.id]?.[sub];
-                                if (myAns) {
-                                    // Tìm nút user đã chọn
-                                    const opts = document.querySelectorAll('#q-'+fb.id+' .tf-row');
-                                    // Tìm row chứa sub (a, b, c, d)
-                                    for(let r of opts) {
-                                        if(r.innerText.includes(sub+')')) {
-                                            const btns = r.querySelectorAll('.tf-btn');
-                                            btns.forEach(b => {
-                                                if(b.innerText === myAns) {
-                                                    b.className = 'tf-btn'; // Reset
-                                                    b.style.backgroundColor = res.correct ? '#22c55e' : '#ef4444';
-                                                    b.style.color = 'white';
-                                                    b.style.borderColor = 'transparent';
-                                                }
-                                            });
+                    }
+                } else if (info.type === 2) { // True/False
+                    if (info.sub_details) {
+                        for (const [sub, subInfo] of Object.entries(info.sub_details)) {
+                            // Find row
+                            const row = Array.from(document.querySelectorAll('#q-'+qid+' .tf-row')).find(r => r.innerText.includes(sub+')'));
+                            if (row) {
+                                // Show Correct Key
+                                const keySpan = document.createElement('span');
+                                keySpan.className = 'ml-2 text-xs font-bold ' + (subInfo.correct ? 'text-green-600' : 'text-red-500');
+                                keySpan.innerText = 'Đ.Án: ' + subInfo.key;
+                                row.querySelector('.tf-opts').appendChild(keySpan);
+
+                                // Highlight User Choice
+                                if (subInfo.user) {
+                                    const btns = row.querySelectorAll('.tf-btn');
+                                    btns.forEach(b => {
+                                        if (b.innerText === subInfo.user) {
+                                            b.style.backgroundColor = subInfo.correct ? '#22c55e' : '#ef4444';
+                                            b.style.color = 'white';
+                                            b.style.borderColor = 'transparent';
                                         }
-                                    }
+                                    });
                                 }
                             }
                         }
-                    } else if (fb.type === 3) { // Short Ans
-                        const inp = document.querySelector('#q-'+fb.id+' input');
-                        if (inp) {
-                            inp.style.border = fb.correct ? '2px solid #22c55e' : '2px solid #ef4444';
-                            inp.style.backgroundColor = fb.correct ? '#f0fdf4' : '#fef2f2';
-                        }
                     }
-                });
+                } else if (info.type === 3) { // Short
+                    const inp = document.querySelector('#q-'+qid+' input');
+                    if (inp) {
+                        inp.style.border = info.is_correct ? '2px solid #22c55e' : '2px solid #ef4444';
+                        inp.style.backgroundColor = info.is_correct ? '#f0fdf4' : '#fef2f2';
+                    }
+                }
+
+                // 3. Show Explanation if available
+                if (info.explanation) {
+                    const qItem = document.getElementById('q-'+qid);
+                    if (qItem) {
+                        const explDiv = document.createElement('div');
+                        explDiv.className = 'mt-2 p-3 bg-yellow-50 border-l-4 border-yellow-400 text-sm text-gray-700';
+                        explDiv.innerHTML = '<b>Lời giải:</b> ' + info.explanation;
+                        qItem.appendChild(explDiv);
+                    }
+                }
             }
         }
 
@@ -5236,7 +5312,7 @@ class WebServerThread(QThread):
 
     def calculate_score(self, exam_matrix, user_answers):
         s1 = s2 = s3 = 0.0
-        feedback = []
+        review_data = {} # Dictionary: question_id -> details
 
         p1 = [q for q in exam_matrix if q['type'] == 1]
         p2 = [q for q in exam_matrix if q['type'] == 2]
@@ -5250,46 +5326,54 @@ class WebServerThread(QThread):
             qid = str(q['id'])
             ua = user_answers.get(qid)
 
-            # [QUAN TRỌNG] Lấy Key từ Content TeX nếu trong matrix chưa có (do chưa qua mixer)
+            # Lấy Key và Explanation từ matrix (đã được chuẩn hóa bởi Worker)
             q_key = q.get('key')
+            # Fallback nếu thiếu
             if not q_key or q_key == '?':
                 content = q.get('content_tex') or q.get('content')
                 q_key = self.extract_key_from_tex(content, q['type'])
 
             q_type = q['type']
-            fb_item = {'id': q['id'], 'type': q_type, 'correct': False, 'key': q_key, 'score': 0}
+
+            # Cấu trúc dữ liệu Review chi tiết
+            item_review = {
+                "is_correct": False,
+                "user_selected": ua,
+                "correct_answer": q_key,
+                "explanation": q.get('explanation', ""),
+                "type": q_type
+            }
 
             if q_type == 1:
                 if str(ua) == str(q_key):
                     s1 += val_p1
-                    fb_item['correct'] = True
-                    fb_item['score'] = val_p1
+                    item_review['is_correct'] = True
             elif q_type == 2:
                 correct_count = 0
-                sub_results = {}
+                sub_details = {}
                 if isinstance(q_key, dict):
+                    if not isinstance(ua, dict): ua = {}
                     for sub in ['a','b','c','d']:
                         k_val = q_key.get(sub)
-                        u_val = ua.get(sub) if isinstance(ua, dict) else None
+                        u_val = ua.get(sub)
                         is_corr = (u_val == k_val)
                         if is_corr: correct_count += 1
-                        sub_results[sub] = {'correct': is_corr, 'key': k_val}
+                        sub_details[sub] = {'correct': is_corr, 'user': u_val, 'key': k_val}
 
                 ratio = {1: 0.1, 2: 0.25, 3: 0.5, 4: 1.0}.get(correct_count, 0)
-                score_earned = val_p2 * ratio
-                s2 += score_earned
-                fb_item['score'] = score_earned
-                fb_item['sub_results'] = sub_results
+                s2 += val_p2 * ratio
+                item_review['is_correct'] = (correct_count == 4)
+                item_review['sub_details'] = sub_details
+
             elif q_type == 3:
                 def norm(s): return str(s or "").replace(" ", "").replace(",", ".").lower()
                 if norm(ua) == norm(q_key):
                     s3 += val_p3
-                    fb_item['correct'] = True
-                    fb_item['score'] = val_p3
+                    item_review['is_correct'] = True
 
-            feedback.append(fb_item)
+            review_data[qid] = item_review
 
-        return round(s1 + s2 + s3, 2), feedback
+        return round(s1 + s2 + s3, 2), review_data
 
     def set_exam_data(self, data):
         """Lưu dữ liệu đề thi hiện tại vào thread để server sử dụng"""
@@ -5454,13 +5538,13 @@ class WebServerThread(QThread):
                                         break
 
                             # 2. Chấm điểm Server-side
-                            final_score, feedback = self.calculate_score(target_matrix, user_answers)
+                            final_score, review_data = self.calculate_score(target_matrix, user_answers)
 
-                            # 3. Lưu kết quả
+                            # 3. Lưu kết quả (Lưu full review data vào DB)
                             try:
                                 conn = sqlite3.connect(self.db_path)
                                 conn.execute("INSERT INTO exam_results (student_name, exam_title, score, detail) VALUES (?, ?, ?, ?)",
-                                    (f"{data['name']} ({data['email']})", exam_data.get('title'), final_score, json.dumps(user_answers)))
+                                    (f"{data['name']} ({data['email']})", exam_data.get('title'), final_score, json.dumps(review_data, ensure_ascii=False)))
                                 conn.commit(); conn.close()
                                 
                                 self.result_received.emit(f"{data['name']} - {exam_data.get('title')}", float(final_score))
@@ -5472,7 +5556,7 @@ class WebServerThread(QThread):
                                 "type": "SCORE_RESULT",
                                 "data": {
                                     "score": final_score,
-                                    "feedback": feedback
+                                    "review_data": review_data
                                 }
                             })
 
@@ -9196,6 +9280,23 @@ class MainApp(QMainWindow):
         elif hasattr(self, 'current_exam') and self.current_exam:
             questions = self.current_exam
             source = "matrix"
+
+        # Trường hợp 3: Đang ở Tab "AI" (Index 3)
+        elif current_idx == 3:
+            if hasattr(self, 'gen_res') and self.gen_res:
+                # Lấy mã đề đầu tiên
+                first_code = list(self.gen_res.keys())[0]
+                ai_qs = self.gen_res[first_code]
+                converted = []
+                for q in ai_qs:
+                    converted.append({
+                        'id': q['idx'],
+                        'content_tex': q['content'],
+                        'key': q['key'],
+                        'dang': q.get('dang', 4)
+                    })
+                questions = converted
+                source = "ai_generated"
             
         # Nếu không tìm thấy ở tab hiện tại nhưng danh sách soạn thảo có dữ liệu
         if not questions and hasattr(self.exam_lst, 'get_all_questions'):
