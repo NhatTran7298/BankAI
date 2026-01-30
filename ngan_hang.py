@@ -989,6 +989,20 @@ class AssignmentUploadWorker(QThread):
             self.finished.emit(False, f"Lỗi không xác định: {str(e)}")
 
 
+class CacheCleanupWorker(QThread):
+    def run(self):
+        try:
+            if os.path.exists(CACHE_DIR):
+                # Xóa các file cũ hơn 1 ngày hoặc xóa hết
+                for f in os.listdir(CACHE_DIR):
+                    if not f.endswith(".svg"): # Giữ lại SVG
+                        try:
+                            fp = os.path.join(CACHE_DIR, f)
+                            # Kiểm tra thời gian tạo, nếu muốn
+                            os.remove(fp)
+                        except: pass
+        except: pass
+
 class ExamPreparerWorker(QThread):
     progress = pyqtSignal(str) 
     finished = pyqtSignal(bool, dict)
@@ -5444,7 +5458,9 @@ class WebServerThread(QThread):
         except:
             pass
 
-        self.wait()
+        # Đợi tối đa 3 giây để luồng kết thúc, nếu không thì ép tắt
+        if not self.wait(3000):
+            self.terminate()
 # =============================================================================
 #  MODULE GOOGLE CLASSROOM & PDF (THÊM MỚI VÀO ĐÂY)
 # =============================================================================
@@ -7295,6 +7311,11 @@ class MainApp(QMainWindow):
         super().__init__()
         self.bk = Backend()
         self.ai = AIEngine(api_key)
+
+        # Dọn dẹp cache ngầm
+        self.cleanup_worker = CacheCleanupWorker()
+        self.cleanup_worker.start()
+
         self.current_exam = []
         self.generated_exams = {}
         self.setWindowTitle("BankAI Pro - 2025 Matrix Edition")
@@ -8647,13 +8668,12 @@ class MainApp(QMainWindow):
 
     def closeEvent(self, event):
         """Xử lý khi đóng ứng dụng"""
-        try:
-            cleanup_cache(self)
-        except:
-            pass
+        # Không chạy cleanup_cache đồng bộ nữa để tránh treo
 
         if hasattr(self, 'web_thread') and self.web_thread.isRunning():
+            # Stop thread với timeout (đã xử lý trong WebServerThread.stop)
             self.web_thread.stop()
+
         event.accept()
 
     def toggle_web_server(self):
