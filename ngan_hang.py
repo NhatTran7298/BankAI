@@ -1848,6 +1848,10 @@ class Backend:
     def get_unassigned(self, limit=100):
         return [dict(r) for r in self.conn.execute("SELECT * FROM questions WHERE id6 IS NULL OR id6 = '' LIMIT ?", (limit,)).fetchall()]
         
+    def get_exam_results(self):
+        """Lấy toàn bộ lịch sử thi"""
+        return self.conn.execute("SELECT * FROM exam_results ORDER BY submitted_at DESC").fetchall()
+
     # Tìm hàm này trong class Backend và thay thế toàn bộ
     def update_id6(self, qid, id6, g, s, c, l, b, d, new_content):
         """Cập nhật ID6 và Nội dung LaTeX mới vào Database"""
@@ -4835,6 +4839,7 @@ WEB_UI_TEMPLATE = """
             <h2 class="text-3xl font-bold text-gray-800 mb-2">KẾT QUẢ</h2>
             <div class="text-5xl font-bold text-blue-600 my-6"><span id="final-score">0</span> điểm</div>
             <div class="text-sm text-green-600 font-bold mb-6">Đã lưu kết quả vào hệ thống!</div>
+            <button onclick="closeModal()" class="bg-gray-500 hover:bg-gray-600 text-white font-bold py-2 px-6 rounded shadow">Xem lại bài làm</button>
         </div>
     </div>
 
@@ -4932,8 +4937,16 @@ WEB_UI_TEMPLATE = """
             renderSheet(data.exam_matrix || []);
         }
 
+        function closeModal() {
+            document.getElementById('score-modal').style.display = 'none';
+        }
+
         function showResult(data) {
             document.getElementById('final-score').innerText = data.score.toFixed(2);
+
+            // Disable inputs
+            document.querySelectorAll('.bubble, .tf-btn').forEach(el => el.style.pointerEvents = 'none');
+            document.querySelectorAll('.short-inp').forEach(el => el.disabled = true);
 
             if (data.feedback && Array.isArray(data.feedback)) {
                 data.feedback.forEach(fb => {
@@ -6460,6 +6473,95 @@ class ExamConfigDialog(QDialog):
             "num_variants": self.inp_variants.value()
         }
 
+class HistoryDialog(QDialog):
+    """Hộp thoại xem Lịch sử kết quả thi"""
+    def __init__(self, backend, parent=None):
+        super().__init__(parent)
+        self.bk = backend
+        self.setWindowTitle("📜 Lịch sử kết quả thi")
+        self.setMinimumSize(900, 600)
+        self.setup_ui()
+        self.load_data()
+
+    def setup_ui(self):
+        layout = QVBoxLayout(self)
+
+        # Header
+        h_layout = QHBoxLayout()
+        h_layout.addWidget(QLabel("<h2>DANH SÁCH BÀI THI ĐÃ NỘP</h2>"))
+        h_layout.addStretch()
+
+        btn_refresh = QPushButton("🔄 Làm mới")
+        btn_refresh.clicked.connect(self.load_data)
+        h_layout.addWidget(btn_refresh)
+
+        btn_export = QPushButton("💾 Xuất Excel/CSV")
+        btn_export.clicked.connect(self.export_csv)
+        h_layout.addWidget(btn_export)
+
+        layout.addLayout(h_layout)
+
+        # Table
+        self.table = QTableWidget()
+        self.table.setColumnCount(5)
+        self.table.setHorizontalHeaderLabels(["ID", "Thời gian", "Học sinh", "Đề thi", "Điểm số"])
+        self.table.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeMode.Stretch)
+        self.table.horizontalHeader().setSectionResizeMode(3, QHeaderView.ResizeMode.Stretch)
+        layout.addWidget(self.table)
+
+        layout.addWidget(QLabel("<i>* Click vào tiêu đề cột để sắp xếp</i>"))
+
+    def load_data(self):
+        try:
+            results = self.bk.get_exam_results()
+            self.table.setRowCount(0)
+
+            for row_idx, row_data in enumerate(results):
+                self.table.insertRow(row_idx)
+                # row_data is a Row object, access by index or key
+                # Schema: id, student_name, exam_title, score, detail, submitted_at
+
+                self.table.setItem(row_idx, 0, QTableWidgetItem(str(row_data['id'])))
+                self.table.setItem(row_idx, 1, QTableWidgetItem(str(row_data['submitted_at'])))
+                self.table.setItem(row_idx, 2, QTableWidgetItem(str(row_data['student_name'])))
+                self.table.setItem(row_idx, 3, QTableWidgetItem(str(row_data['exam_title'])))
+
+                score_item = QTableWidgetItem(str(row_data['score']))
+                score_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+                score_item.setFont(QFont("Arial", 11, QFont.Weight.Bold))
+
+                try:
+                    s = float(row_data['score'])
+                    if s >= 8.0: score_item.setForeground(QColor("green"))
+                    elif s < 5.0: score_item.setForeground(QColor("red"))
+                    else: score_item.setForeground(QColor("blue"))
+                except: pass
+
+                self.table.setItem(row_idx, 4, score_item)
+
+        except Exception as e:
+            QMessageBox.warning(self, "Lỗi tải dữ liệu", str(e))
+
+    def export_csv(self):
+        path, _ = QFileDialog.getSaveFileName(self, "Xuất file CSV", "Lich_Su_Thi.csv", "CSV Files (*.csv)")
+        if not path: return
+
+        try:
+            import csv
+            with open(path, 'w', newline='', encoding='utf-8-sig') as f:
+                writer = csv.writer(f)
+                writer.writerow(["ID", "Thời gian", "Học sinh", "Đề thi", "Điểm số"])
+
+                for r in range(self.table.rowCount()):
+                    row_data = []
+                    for c in range(self.table.columnCount()):
+                        item = self.table.item(r, c)
+                        row_data.append(item.text() if item else "")
+                    writer.writerow(row_data)
+
+            QMessageBox.information(self, "Thành công", f"Đã xuất file: {path}")
+        except Exception as e:
+            QMessageBox.critical(self, "Lỗi xuất file", str(e))
 class ExamMonitorDialog(QDialog):
     """Màn hình GIÁM SÁT & GIAO BÀI"""
     def __init__(self, web_thread, parent=None):
@@ -7379,6 +7481,7 @@ class MainApp(QMainWindow):
         
         menu.addAction("📖  Hướng dẫn sử dụng", self.open_help)
         menu.addSeparator()
+        menu.addAction("📜  Lịch sử Thi Online", self.open_history)
         menu.addAction("🏷️  Gán ID6 Tự động", self.show_id6)
         menu.addAction("🖼️  Quản lý Kho Hình ảnh", self.open_image_manager)
         menu.addAction("🧹  Làm sạch & Check Lỗi", self.open_file_cleaner)
@@ -8686,6 +8789,11 @@ class MainApp(QMainWindow):
         # 2. Mở Dialog (Truyền list object vào - QUAN TRỌNG)
         # Class ClassroomDialog mới sẽ nhận danh sách này để xử lý từng câu
         dlg = ClassroomDialog(questions_objs, self) 
+        dlg.exec()
+
+    def open_history(self):
+        """Mở lịch sử thi"""
+        dlg = HistoryDialog(self.bk, self)
         dlg.exec()
 
     def open_help(self):
