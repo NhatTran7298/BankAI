@@ -5283,7 +5283,6 @@ class ConnectionManager:
 manager = ConnectionManager()
 
 # --- ĐẢM BẢO ĐÃ IMPORT CÁC THƯ VIỆN NÀY Ở ĐẦU FILE ---
-from pyngrok import ngrok, conf
 import uvicorn
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.responses import HTMLResponse, FileResponse
@@ -5307,6 +5306,7 @@ class WebServerThread(QThread):
         self.ip_address = "0.0.0.0" 
         self.gg_sync = None 
         self.tunnel_process = None
+        self.app = None
         
         # Thư mục chứa các file đề thi riêng biệt
         self.exam_dir = os.path.join(os.path.expanduser("~"), ".bankai_exams")
@@ -5492,28 +5492,7 @@ class WebServerThread(QThread):
         except Exception as e: print(f"❌ Lỗi Sync: {e}")
 
     def run(self):
-        # 1. DIỆT SẠCH TIẾN TRÌNH NGROK CŨ
-        try:
-            print("🔄 Đang dọn dẹp các kết nối cũ...")
-            from pyngrok import ngrok
-            ngrok.kill()
-            
-            # [Fix] Force kill process nếu ngrok.kill() không sạch (Tránh lỗi ERR_NGROK_334)
-            if sys.platform != "win32":
-                os.system("pkill -9 ngrok")
-            
-            import time
-            time.sleep(2)
-        except:
-            pass
-
-        # 2. CẤU HÌNH TOKEN (ĐOẠN ĐÃ SỬA)
-        # Bắt buộc nạp token để tránh lỗi ERR_NGROK_4018
-        if self.ngrok_auth_token:
-            conf.get_default().auth_token = self.ngrok_auth_token
-            # Đặt vùng là US (Mỹ) hoặc AP (Châu Á) tùy chọn
-            conf.get_default().region = "us" 
-        
+        # 1. Cấu hình FastAPI
         app = FastAPI()
         app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_credentials=True, allow_methods=["*"], allow_headers=["*"])
 
@@ -5528,34 +5507,35 @@ class WebServerThread(QThread):
                 # 1. Khởi tạo danh sách học sinh
                 final_students = []
             
-            # 2. Cố gắng lấy danh sách từ Database (Do Classroom đồng bộ về)
-            try:
-                # DB_PATH là biến toàn cục chứa đường dẫn file .db của bạn
-                conn = sqlite3.connect(DB_PATH)
-                cursor = conn.cursor()
-                # Lấy tên và email từ bảng students
-                cursor.execute("SELECT name, email FROM students")
-                rows = cursor.fetchall()
-                conn.close()
-                
-                if rows:
-                    for r_name, r_email in rows:
-                        final_students.append({"name": r_name, "email": r_email})
-                    print(f"Server: Đã load {len(final_students)} học sinh từ Database.")
-            except Exception as e:
-                print(f"Server: Không đọc được DB Students ({e}). Dùng danh sách từ file đề.")
+                # 2. Cố gắng lấy danh sách từ Database (Do Classroom đồng bộ về)
+                try:
+                    # DB_PATH là biến toàn cục chứa đường dẫn file .db của bạn
+                    conn = sqlite3.connect(DB_PATH)
+                    cursor = conn.cursor()
+                    # Lấy tên và email từ bảng students
+                    cursor.execute("SELECT name, email FROM students")
+                    rows = cursor.fetchall()
+                    conn.close()
 
-            # 3. Fallback: Nếu DB rỗng (chưa đồng bộ), dùng lại danh sách cũ trong file đề
-            if not final_students:
-                final_students = data.get('students', [])
+                    if rows:
+                        for r_name, r_email in rows:
+                            final_students.append({"name": r_name, "email": r_email})
+                        print(f"Server: Đã load {len(final_students)} học sinh từ Database.")
+                except Exception as e:
+                    print(f"Server: Không đọc được DB Students ({e}). Dùng danh sách từ file đề.")
 
-            # 4. Chuyển đổi sang JSON để chèn vào HTML
-            # ensure_ascii=False để giữ tiếng Việt không bị lỗi font
-            json_students = json.dumps(final_students, ensure_ascii=False).replace("</script>", "<\\/script>")
+                # 3. Fallback: Nếu DB rỗng (chưa đồng bộ), dùng lại danh sách cũ trong file đề
+                if not final_students:
+                    final_students = data.get('students', [])
+
+                # 4. Chuyển đổi sang JSON để chèn vào HTML
+                # ensure_ascii=False để giữ tiếng Việt không bị lỗi font
+                json_students = json.dumps(final_students, ensure_ascii=False).replace("</script>", "<\\/script>")
+
+                # 5. Thay thế placeholder trong HTML
+                html_content = WEB_UI_TEMPLATE.replace("__STUDENT_LIST__", json_students)
+                return HTMLResponse(content=html_content)
             
-            # 5. Thay thế placeholder trong HTML
-            html_content = WEB_UI_TEMPLATE.replace("__STUDENT_LIST__", json_students)
-            return HTMLResponse(content=html)
             return HTMLResponse(content="<h1>❌ Đề thi không tồn tại hoặc đã bị xóa!</h1>")
 
         @app.get("/api/pdf/{filename}")
@@ -5641,6 +5621,7 @@ class WebServerThread(QThread):
                                         
                                         prompt = f"Học sinh làm sai các câu sau: {json.dumps(minimized_wrong, ensure_ascii=False)}. Hãy phân tích ngắn gọn lỗi sai (dựa vào lời giải) và đưa ra lời khuyên ôn tập (tối đa 150 từ)."
                                         # Use to_thread to avoid blocking event loop
+                                        import asyncio
                                         response = await asyncio.to_thread(self.ai_engine.model.generate_content, prompt)
                                         ai_feedback = response.text
                                     else:
@@ -5682,15 +5663,28 @@ class WebServerThread(QThread):
 
     def start_cloudflare_tunnel(self):
         """Khởi động Cloudflare Tunnel và lấy URL"""
-        if not shutil.which("cloudflared"):
-            self.server_ready.emit("Lỗi: Chưa cài đặt cloudflared! Vui lòng cài đặt và thêm vào PATH.")
+        import shutil
+        import subprocess
+
+        # Tìm binary
+        binary_name = "cloudflared.exe" if sys.platform == "win32" else "cloudflared"
+        binary_path = shutil.which(binary_name)
+
+        # Nếu không tìm thấy trong PATH, thử tìm ở thư mục hiện tại
+        if not binary_path:
+            local_path = os.path.join(os.getcwd(), binary_name)
+            if os.path.exists(local_path):
+                binary_path = local_path
+
+        if not binary_path:
+            self.server_ready.emit("Lỗi: Chưa cài đặt cloudflared! Vui lòng tải và thêm vào PATH.")
             return
 
         try:
             # Chạy cloudflared tunnel
             # Lưu ý: cloudflared in URL ra stderr
             self.tunnel_process = subprocess.Popen(
-                ["cloudflared", "tunnel", "--url", f"http://localhost:{self.port}"],
+                [binary_path, "tunnel", "--url", f"http://localhost:{self.port}"],
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
                 text=True,
@@ -5713,16 +5707,14 @@ class WebServerThread(QThread):
             if not line:
                 break
             
-            print(f"[Cloudflare] {line.strip()}") # Debug log
-            
             # Tìm dòng chứa URL .trycloudflare.com
+            # Regex: https://[random].trycloudflare.com
             if ".trycloudflare.com" in line and not found:
                 match = re.search(r'https://[a-zA-Z0-9-]+\.trycloudflare\.com', line)
                 if match:
                     self.public_url = match.group(0)
                     self.server_ready.emit(self.public_url)
                     found = True
-                    # Không break, tiếp tục đọc để giữ pipe không bị đầy
         
         if not found and self.tunnel_process:
              self.server_ready.emit("Không tìm thấy URL Cloudflare. Kiểm tra log.")
@@ -5735,7 +5727,6 @@ class WebServerThread(QThread):
         if self.tunnel_process:
             try:
                 self.tunnel_process.terminate()
-                # self.tunnel_process.wait(timeout=2)
             except: pass
             self.tunnel_process = None
 
@@ -5746,6 +5737,7 @@ class WebServerThread(QThread):
         # Đợi tối đa 3 giây để luồng kết thúc, nếu không thì ép tắt
         if not self.wait(3000):
             self.terminate()
+
 # =============================================================================
 #  MODULE GOOGLE CLASSROOM & PDF (THÊM MỚI VÀO ĐÂY)
 # =============================================================================
