@@ -1764,9 +1764,12 @@ class Backend:
             CREATE TABLE IF NOT EXISTS exam_results (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 student_name TEXT,
+                student_email TEXT,
+                exam_id TEXT,
                 exam_title TEXT,
                 score REAL,
                 detail TEXT, -- Lưu JSON chi tiết đúng sai
+                ai_feedback TEXT,
                 submitted_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
         """)
@@ -5400,69 +5403,6 @@ class WebServerThread(QThread):
                         u_val = ua.get(sub)
                         is_corr = (u_val == k_val)
                         if is_corr: correct_count += 1
-                        # ========================================================
-                    # [BẮT ĐẦU ĐOẠN CODE CHÈN THÊM - BƯỚC 2]
-                    # ========================================================
-                    # ========================================================
-                    # [CODE MỚI ĐÃ SỬA LỖI TIMESTAMP]
-                    # ========================================================
-                    try:
-                        # 1. Tạo thời gian hiện tại từ Python (Thay vì để SQL tự sinh)
-                        current_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-
-                        # 2. Tạo dữ liệu chi tiết (Log bài làm)
-                        results_log = []
-                        questions_list = data.get('questions', []) 
-                        
-                        for q in questions_list:
-                            q_id_str = str(q['id'])
-                            stu_ans = user_answers.get(q_id_str, user_answers.get(int(q_id_str), ""))
-                            cor_ans = q.get('correct', "")
-                            is_right = str(stu_ans).strip().lower() == str(cor_ans).strip().lower()
-                            
-                            results_log.append({
-                                "question": q.get('content', ""),
-                                "student_ans": stu_ans,
-                                "correct_ans": cor_ans,
-                                "is_correct": is_right
-                            })
-                        
-                        detail_json = json.dumps(results_log, ensure_ascii=False)
-                        
-                        # 3. Lấy thông tin học sinh
-                        p_name = payload.get('student_name', 'Học sinh ẩn danh')
-                        p_email = payload.get('student_email', '')
-                        p_exam_id = payload.get('exam_id', 'unknown')
-                        
-                        # 4. Ghi vào Database (Có thêm cột timestamp)
-                        with sqlite3.connect(DB_PATH) as conn:
-                            cursor = conn.cursor()
-                            
-                            # Đảm bảo bảng tồn tại với cấu trúc mới (timestamp là TEXT)
-                            cursor.execute('''CREATE TABLE IF NOT EXISTS exam_results (
-                                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                                student_name TEXT, 
-                                student_email TEXT, 
-                                exam_id TEXT,
-                                score REAL, 
-                                detail_json TEXT, 
-                                ai_feedback TEXT,
-                                timestamp TEXT
-                            )''')
-                            
-                            # CÂU LỆNH QUAN TRỌNG NHẤT: Thêm cột timestamp và giá trị current_time
-                            cursor.execute("""
-                                INSERT INTO exam_results (student_name, student_email, exam_id, score, detail_json, timestamp)
-                                VALUES (?, ?, ?, ?, ?, ?)
-                            """, (p_name, p_email, p_exam_id, score, detail_json, current_time))
-                            
-                            conn.commit()
-                            
-                        print(f"✅ [SERVER] Đã lưu kết quả lúc {current_time}: {p_name} - {score} điểm")
-                        
-                    except Exception as e_save:
-                        print(f"❌ [SERVER ERROR] Lỗi lưu điểm: {e_save}")
-                    # ========================================================
                         sub_details[sub] = {'correct': is_corr, 'user': u_val, 'key': k_val}
                 
                 ratio = {1: 0.1, 2: 0.25, 3: 0.5, 4: 1.0}.get(correct_count, 0)
@@ -9894,7 +9834,16 @@ class AnalysisTab(QWidget):
     def _ai_worker(self):
         try:
             details = json.loads(self.current_json)
-            wrong = [d for d in details if not d['is_correct']]
+
+            # [FIX] Xử lý trường hợp details là dict (từ DB mới) hoặc list (cũ)
+            if isinstance(details, dict):
+                items = details.values()
+            elif isinstance(details, list):
+                items = details
+            else:
+                items = []
+
+            wrong = [d for d in items if isinstance(d, dict) and not d.get('is_correct')]
             
             if not wrong:
                 msg = "Học sinh làm đúng 100%. Không có lỗi sai!"
@@ -10154,6 +10103,7 @@ def check_and_fix_db():
                 student_name TEXT,
                 student_email TEXT,
                 exam_id TEXT,
+                exam_title TEXT,
                 score REAL,
                 detail TEXT,
                 ai_feedback TEXT,
@@ -10164,7 +10114,17 @@ def check_and_fix_db():
         # 2. Kiểm tra và Migrating cột
         cursor.execute("PRAGMA table_info(exam_results)")
         columns = [info[1] for info in cursor.fetchall()]
-        
+
+        if 'exam_title' not in columns:
+            print("⚠️ Adding: exam_title")
+            cursor.execute("ALTER TABLE exam_results ADD COLUMN exam_title TEXT")
+            conn.commit()
+
+        if 'exam_id' not in columns:
+            print("⚠️ Adding: exam_id")
+            cursor.execute("ALTER TABLE exam_results ADD COLUMN exam_id TEXT")
+            conn.commit()
+
         # [MIGRATION] timestamp -> submitted_at
         if 'submitted_at' not in columns:
             if 'timestamp' in columns:
