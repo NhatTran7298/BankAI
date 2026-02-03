@@ -5574,10 +5574,9 @@ class WebServerThread(QThread):
             data = self.load_exam_file(exam_id)
             if data:
                 # Inject Student List
-                s# --- [BẮT ĐẦU ĐOẠN CODE MỚI PHẦN 5] ---
-            
-            # 1. Khởi tạo danh sách học sinh
-            final_students = []
+
+                # 1. Khởi tạo danh sách học sinh
+                final_students = []
             
             # 2. Cố gắng lấy danh sách từ Database (Do Classroom đồng bộ về)
             try:
@@ -5701,17 +5700,27 @@ class WebServerThread(QThread):
         try:
             ngrok.kill()
             success = False
-            for i in range(3):
+
+            # 1. Thử kết nối với Domain cố định (Nếu có)
+            if MY_DOMAIN and "ngrok-free.dev" in MY_DOMAIN:
                 try:
-                    import time; time.sleep(2)
+                    print(f"🔄 Connecting to custom domain: {MY_DOMAIN}")
+                    import time; time.sleep(1)
                     self.public_url = ngrok.connect(self.port, domain=MY_DOMAIN).public_url
                     self.server_ready.emit(self.public_url)
-                    success = True; break
-                except: pass
+                    success = True
+                except Exception as e:
+                    print(f"⚠️ Custom domain failed: {e}")
+
+            # 2. Nếu thất bại, fallback sang random domain
             if not success:
+                print("🔄 Falling back to random domain...")
                 self.public_url = ngrok.connect(self.port).public_url
                 self.server_ready.emit(self.public_url)
-        except Exception as e: self.server_ready.emit(f"Lỗi Ngrok: {e}")
+
+        except Exception as e:
+            self.server_ready.emit(f"Lỗi Ngrok: {e}")
+            print(f"❌ Ngrok Fatal Error: {e}")
 
         import uvicorn
         config = uvicorn.Config(app, host="0.0.0.0", port=self.port, log_level="critical", proxy_headers=True)
@@ -9811,7 +9820,8 @@ class AnalysisTab(QWidget):
         try:
             conn = sqlite3.connect(self.db_path)
             cur = conn.cursor()
-            cur.execute("SELECT id, student_name, score, timestamp, detail_json, ai_feedback FROM exam_results ORDER BY id DESC LIMIT 100")
+            # [FIX] Rename timestamp -> submitted_at, detail_json -> detail
+            cur.execute("SELECT id, student_name, score, submitted_at, detail, ai_feedback FROM exam_results ORDER BY id DESC LIMIT 100")
             self.rows = cur.fetchall()
             conn.close()
             
@@ -10120,7 +10130,7 @@ def check_and_fix_db():
         conn = sqlite3.connect(DB_PATH)
         cursor = conn.cursor()
         
-        # 1. Tạo bảng nếu chưa có (Giữ nguyên DEFAULT CURRENT_TIMESTAMP cho bảng MỚI)
+        # 1. Tạo bảng nếu chưa có (Chuẩn hóa theo Backend: detail, submitted_at)
         cursor.execute('''
             CREATE TABLE IF NOT EXISTS exam_results (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -10128,29 +10138,50 @@ def check_and_fix_db():
                 student_email TEXT,
                 exam_id TEXT,
                 score REAL,
-                detail_json TEXT,
+                detail TEXT,
                 ai_feedback TEXT,
-                timestamp TEXT
+                submitted_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
         ''')
 
-        # 2. Kiểm tra các cột thiếu (Sửa lỗi non-constant default)
+        # 2. Kiểm tra và Migrating cột
         cursor.execute("PRAGMA table_info(exam_results)")
         columns = [info[1] for info in cursor.fetchall()]
         
-        # Sửa lỗi timestamp: Thêm cột TEXT bình thường, sau đó Update dữ liệu
-        if 'timestamp' not in columns:
-            print("⚠️ Thiếu cột 'timestamp'. Đang thêm thủ công...")
-            # Bước 1: Thêm cột không có default dynamic
-            cursor.execute("ALTER TABLE exam_results ADD COLUMN timestamp TEXT")
-            conn.commit()
-            # Bước 2: Điền thời gian hiện tại vào các dòng cũ đang bị NULL
-            cursor.execute("UPDATE exam_results SET timestamp = datetime('now', 'localtime') WHERE timestamp IS NULL")
-            conn.commit()
-            print("✅ Đã thêm cột timestamp thành công.")
+        # [MIGRATION] timestamp -> submitted_at
+        if 'submitted_at' not in columns:
+            if 'timestamp' in columns:
+                print("⚠️ Migrating: timestamp -> submitted_at")
+                try:
+                    cursor.execute("ALTER TABLE exam_results RENAME COLUMN timestamp TO submitted_at")
+                    conn.commit()
+                except:
+                    # Fallback cho SQLite cũ
+                    cursor.execute("ALTER TABLE exam_results ADD COLUMN submitted_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP")
+                    cursor.execute("UPDATE exam_results SET submitted_at = timestamp")
+                    conn.commit()
+            else:
+                print("⚠️ Adding: submitted_at")
+                cursor.execute("ALTER TABLE exam_results ADD COLUMN submitted_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP")
+                conn.commit()
+
+        # [MIGRATION] detail_json -> detail
+        if 'detail' not in columns:
+            if 'detail_json' in columns:
+                print("⚠️ Migrating: detail_json -> detail")
+                try:
+                    cursor.execute("ALTER TABLE exam_results RENAME COLUMN detail_json TO detail")
+                    conn.commit()
+                except:
+                    cursor.execute("ALTER TABLE exam_results ADD COLUMN detail TEXT")
+                    cursor.execute("UPDATE exam_results SET detail = detail_json")
+                    conn.commit()
+            else:
+                cursor.execute("ALTER TABLE exam_results ADD COLUMN detail TEXT")
+                conn.commit()
             
         if 'ai_feedback' not in columns:
-            print("⚠️ Thiếu cột 'ai_feedback'. Đang thêm...")
+            print("⚠️ Adding: ai_feedback")
             cursor.execute("ALTER TABLE exam_results ADD COLUMN ai_feedback TEXT")
             conn.commit()
             
