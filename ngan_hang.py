@@ -53,6 +53,7 @@ import subprocess
 import platform
 import warnings
 import os.path
+import threading
 # =============================================================================
 # MODULE BẢN QUYỀN (LICENSE SYSTEM)
 # =============================================================================
@@ -1764,9 +1765,12 @@ class Backend:
             CREATE TABLE IF NOT EXISTS exam_results (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 student_name TEXT,
+                student_email TEXT,
+                exam_id TEXT,
                 exam_title TEXT,
                 score REAL,
                 detail TEXT, -- Lưu JSON chi tiết đúng sai
+                ai_feedback TEXT,
                 submitted_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
         """)
@@ -4938,10 +4942,16 @@ WEB_UI_TEMPLATE = """
     </div>
 
     <div id="score-modal">
-        <div class="score-box">
+        <div class="score-box" style="max-width: 800px;">
             <div class="text-6xl mb-4">🏆</div>
             <h2 class="text-3xl font-bold text-gray-800 mb-2">KẾT QUẢ</h2>
             <div class="text-5xl font-bold text-blue-600 my-6"><span id="final-score">0</span> điểm</div>
+            
+            <div id="ai-section" class="hidden text-left bg-blue-50 p-4 rounded-lg border border-blue-200 mb-6 max-h-60 overflow-y-auto">
+                <div class="font-bold text-blue-800 mb-2 flex items-center gap-2"><span>🤖</span> <span>TRỢ LÝ AI PHÂN TÍCH & GÓP Ý:</span></div>
+                <div id="ai-feedback" class="text-sm text-gray-700 whitespace-pre-wrap leading-relaxed"></div>
+            </div>
+
             <div class="text-sm text-green-600 font-bold mb-6">Đã lưu kết quả vào hệ thống!</div>
             <button onclick="enterReviewMode()" class="bg-gray-500 hover:bg-gray-600 text-white font-bold py-2 px-6 rounded shadow">Xem lại bài làm</button>
         </div>
@@ -5051,6 +5061,13 @@ WEB_UI_TEMPLATE = """
             document.getElementById('final-score').innerText = data.score.toFixed(2);
             document.getElementById('score-modal').style.display = 'flex';
             savedReviewData = data.review_data;
+            
+            if (data.ai_feedback) {
+                document.getElementById('ai-feedback').innerText = data.ai_feedback;
+                document.getElementById('ai-section').classList.remove('hidden');
+            } else {
+                document.getElementById('ai-section').classList.add('hidden');
+            }
         }
 
         function enterReviewMode() {
@@ -5226,6 +5243,8 @@ import json
 import asyncio
 import socket
 
+# (Đã xóa pyngrok)
+
 class ConnectionManager:
     def __init__(self):
         self.active_connections: dict = {}
@@ -5279,21 +5298,15 @@ class WebServerThread(QThread):
     server_ready = pyqtSignal(str)
     result_received = pyqtSignal(str, float)
 
-    def __init__(self, db_path):
+    def __init__(self, db_path, ai_engine=None):
         super().__init__()
         self.db_path = db_path
+        self.ai_engine = ai_engine
         self.port = 8080
-        
-        # [QUAN TRỌNG] Nhớ điền Token thật của bạn vào đây
-        # Ví dụ: self.ngrok_auth_token = "2Alk..."
-        self.ngrok_auth_token = "38b8oxhy3hT98ZoeqO7kl8RJaJP_axFQ8v4mjEtV5EvSwLzb"
-        
         self.public_url = ""
-        
-        # [ĐÃ SỬA] Thêm lại dòng này để tránh lỗi Attribute Error
         self.ip_address = "0.0.0.0" 
-        
         self.gg_sync = None 
+        self.tunnel_process = None
         
         # Thư mục chứa các file đề thi riêng biệt
         self.exam_dir = os.path.join(os.path.expanduser("~"), ".bankai_exams")
@@ -5400,69 +5413,6 @@ class WebServerThread(QThread):
                         u_val = ua.get(sub)
                         is_corr = (u_val == k_val)
                         if is_corr: correct_count += 1
-                        # ========================================================
-                    # [BẮT ĐẦU ĐOẠN CODE CHÈN THÊM - BƯỚC 2]
-                    # ========================================================
-                    # ========================================================
-                    # [CODE MỚI ĐÃ SỬA LỖI TIMESTAMP]
-                    # ========================================================
-                    try:
-                        # 1. Tạo thời gian hiện tại từ Python (Thay vì để SQL tự sinh)
-                        current_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-
-                        # 2. Tạo dữ liệu chi tiết (Log bài làm)
-                        results_log = []
-                        questions_list = data.get('questions', []) 
-                        
-                        for q in questions_list:
-                            q_id_str = str(q['id'])
-                            stu_ans = user_answers.get(q_id_str, user_answers.get(int(q_id_str), ""))
-                            cor_ans = q.get('correct', "")
-                            is_right = str(stu_ans).strip().lower() == str(cor_ans).strip().lower()
-                            
-                            results_log.append({
-                                "question": q.get('content', ""),
-                                "student_ans": stu_ans,
-                                "correct_ans": cor_ans,
-                                "is_correct": is_right
-                            })
-                        
-                        detail_json = json.dumps(results_log, ensure_ascii=False)
-                        
-                        # 3. Lấy thông tin học sinh
-                        p_name = payload.get('student_name', 'Học sinh ẩn danh')
-                        p_email = payload.get('student_email', '')
-                        p_exam_id = payload.get('exam_id', 'unknown')
-                        
-                        # 4. Ghi vào Database (Có thêm cột timestamp)
-                        with sqlite3.connect(DB_PATH) as conn:
-                            cursor = conn.cursor()
-                            
-                            # Đảm bảo bảng tồn tại với cấu trúc mới (timestamp là TEXT)
-                            cursor.execute('''CREATE TABLE IF NOT EXISTS exam_results (
-                                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                                student_name TEXT, 
-                                student_email TEXT, 
-                                exam_id TEXT,
-                                score REAL, 
-                                detail_json TEXT, 
-                                ai_feedback TEXT,
-                                timestamp TEXT
-                            )''')
-                            
-                            # CÂU LỆNH QUAN TRỌNG NHẤT: Thêm cột timestamp và giá trị current_time
-                            cursor.execute("""
-                                INSERT INTO exam_results (student_name, student_email, exam_id, score, detail_json, timestamp)
-                                VALUES (?, ?, ?, ?, ?, ?)
-                            """, (p_name, p_email, p_exam_id, score, detail_json, current_time))
-                            
-                            conn.commit()
-                            
-                        print(f"✅ [SERVER] Đã lưu kết quả lúc {current_time}: {p_name} - {score} điểm")
-                        
-                    except Exception as e_save:
-                        print(f"❌ [SERVER ERROR] Lỗi lưu điểm: {e_save}")
-                    # ========================================================
                         sub_details[sub] = {'correct': is_corr, 'user': u_val, 'key': k_val}
                 
                 ratio = {1: 0.1, 2: 0.25, 3: 0.5, 4: 1.0}.get(correct_count, 0)
@@ -5574,10 +5524,9 @@ class WebServerThread(QThread):
             data = self.load_exam_file(exam_id)
             if data:
                 # Inject Student List
-                s# --- [BẮT ĐẦU ĐOẠN CODE MỚI PHẦN 5] ---
-            
-            # 1. Khởi tạo danh sách học sinh
-            final_students = []
+                
+                # 1. Khởi tạo danh sách học sinh
+                final_students = []
             
             # 2. Cố gắng lấy danh sách từ Database (Do Classroom đồng bộ về)
             try:
@@ -5674,11 +5623,37 @@ class WebServerThread(QThread):
                             # 2. Chấm điểm Server-side
                             final_score, review_data = self.calculate_score(target_matrix, user_answers)
 
+                            # --- AI FEEDBACK GENERATION ---
+                            ai_feedback = ""
+                            if self.ai_engine and self.ai_engine.is_ready:
+                                try:
+                                    items = list(review_data.values())
+                                    wrong = [d for d in items if isinstance(d, dict) and not d.get('is_correct')]
+                                    if wrong:
+                                        minimized_wrong = []
+                                        for w in wrong:
+                                            minimized_wrong.append({
+                                                "type": w.get("type"),
+                                                "explanation": w.get("explanation", "")[:300], 
+                                                "correct": w.get("correct_answer"),
+                                                "user": w.get("user_selected")
+                                            })
+                                        
+                                        prompt = f"Học sinh làm sai các câu sau: {json.dumps(minimized_wrong, ensure_ascii=False)}. Hãy phân tích ngắn gọn lỗi sai (dựa vào lời giải) và đưa ra lời khuyên ôn tập (tối đa 150 từ)."
+                                        # Use to_thread to avoid blocking event loop
+                                        response = await asyncio.to_thread(self.ai_engine.model.generate_content, prompt)
+                                        ai_feedback = response.text
+                                    else:
+                                        ai_feedback = "Chúc mừng! Bạn đã trả lời đúng tất cả các câu hỏi."
+                                except Exception as e:
+                                    print(f"AI Gen Error: {e}")
+                            # ------------------------------
+
                             # 3. Lưu kết quả (Lưu full review data vào DB)
                             try:
                                 conn = sqlite3.connect(self.db_path)
-                                conn.execute("INSERT INTO exam_results (student_name, exam_title, score, detail) VALUES (?, ?, ?, ?)",
-                                    (f"{data['name']} ({data['email']})", exam_data.get('title'), final_score, json.dumps(review_data, ensure_ascii=False)))
+                                conn.execute("INSERT INTO exam_results (student_name, exam_title, score, detail, ai_feedback) VALUES (?, ?, ?, ?, ?)",
+                                    (f"{data['name']} ({data['email']})", exam_data.get('title'), final_score, json.dumps(review_data, ensure_ascii=False), ai_feedback))
                                 conn.commit(); conn.close()
                                 
                                 self.result_received.emit(f"{data['name']} - {exam_data.get('title')}", float(final_score))
@@ -5690,47 +5665,83 @@ class WebServerThread(QThread):
                                 "type": "SCORE_RESULT", 
                                 "data": {
                                     "score": final_score,
-                                    "review_data": review_data
+                                    "review_data": review_data,
+                                    "ai_feedback": ai_feedback
                                 }
                             })
 
             except: pass
 
-        # Kết nối Ngrok
-        MY_DOMAIN = "oncologic-premeditative-nada.ngrok-free.dev"
-        try:
-            ngrok.kill()
-            success = False
-            for i in range(3):
-                try:
-                    import time; time.sleep(2)
-                    self.public_url = ngrok.connect(self.port, domain=MY_DOMAIN).public_url
-                    self.server_ready.emit(self.public_url)
-                    success = True; break
-                except: pass
-            if not success:
-                self.public_url = ngrok.connect(self.port).public_url
-                self.server_ready.emit(self.public_url)
-        except Exception as e: self.server_ready.emit(f"Lỗi Ngrok: {e}")
+        # Start Cloudflare Tunnel
+        self.start_cloudflare_tunnel()
 
         import uvicorn
         config = uvicorn.Config(app, host="0.0.0.0", port=self.port, log_level="critical", proxy_headers=True)
         self.server = uvicorn.Server(config)
         self.server.run()
 
+    def start_cloudflare_tunnel(self):
+        """Khởi động Cloudflare Tunnel và lấy URL"""
+        if not shutil.which("cloudflared"):
+            self.server_ready.emit("Lỗi: Chưa cài đặt cloudflared! Vui lòng cài đặt và thêm vào PATH.")
+            return
+
+        try:
+            # Chạy cloudflared tunnel
+            # Lưu ý: cloudflared in URL ra stderr
+            self.tunnel_process = subprocess.Popen(
+                ["cloudflared", "tunnel", "--url", f"http://localhost:{self.port}"],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                bufsize=1,
+                universal_newlines=True
+            )
+            
+            # Tạo thread đọc log để lấy URL
+            t = threading.Thread(target=self._monitor_tunnel_log, daemon=True)
+            t.start()
+            
+        except Exception as e:
+            self.server_ready.emit(f"Lỗi khởi động Cloudflare: {e}")
+
+    def _monitor_tunnel_log(self):
+        """Đọc log từ cloudflared để tìm URL"""
+        found = False
+        while self.tunnel_process and self.tunnel_process.poll() is None:
+            line = self.tunnel_process.stderr.readline()
+            if not line:
+                break
+            
+            print(f"[Cloudflare] {line.strip()}") # Debug log
+            
+            # Tìm dòng chứa URL .trycloudflare.com
+            if ".trycloudflare.com" in line and not found:
+                match = re.search(r'https://[a-zA-Z0-9-]+\.trycloudflare\.com', line)
+                if match:
+                    self.public_url = match.group(0)
+                    self.server_ready.emit(self.public_url)
+                    found = True
+                    # Không break, tiếp tục đọc để giữ pipe không bị đầy
+        
+        if not found and self.tunnel_process:
+             self.server_ready.emit("Không tìm thấy URL Cloudflare. Kiểm tra log.")
+
     def stop(self):
-        """Dừng server và ngrok an toàn"""
+        """Dừng server và Cloudflare an toàn"""
         if hasattr(self, 'server') and self.server:
             self.server.should_exit = True
         
-        try:
-            from pyngrok import ngrok
-            ngrok.kill()
-            # Force kill
-            if sys.platform != "win32":
-                os.system("pkill -9 ngrok")
-        except:
-            pass
+        if self.tunnel_process:
+            try:
+                self.tunnel_process.terminate()
+                # self.tunnel_process.wait(timeout=2)
+            except: pass
+            self.tunnel_process = None
+
+        if sys.platform != "win32":
+            try: os.system("pkill -9 cloudflared")
+            except: pass
         
         # Đợi tối đa 3 giây để luồng kết thúc, nếu không thì ép tắt
         if not self.wait(3000):
@@ -9496,7 +9507,7 @@ class MainApp(QMainWindow):
                 self.pd_prep.show()
                 
                 # Khởi tạo Server nếu chưa có
-                if not hasattr(self, 'web_thread'): self.web_thread = WebServerThread(DB_PATH)
+                if not hasattr(self, 'web_thread'): self.web_thread = WebServerThread(DB_PATH, self.ai)
                 
                 # Chạy Worker biên dịch PDF (Không truyền external_tex để dùng Main hệ thống)
                 self.prep_worker = ExamPreparerWorker(config['questions'], exam_title, config['time'], num_variants=config.get('num_variants', 1))
@@ -9745,11 +9756,20 @@ from matplotlib.figure import Figure
 import threading
 
 class AnalysisTab(QWidget):
+    # Signals for thread communication
+    ai_finished = pyqtSignal(str)
+    ai_error = pyqtSignal(str)
+
     def __init__(self, db_path, ai_engine):
         super().__init__()
         self.db_path = db_path
         self.ai_engine = ai_engine
         self.current_id = None
+        
+        # Connect signals
+        self.ai_finished.connect(self.on_ai_finished)
+        self.ai_error.connect(self.on_ai_error)
+        
         self.init_ui()
 
     def init_ui(self):
@@ -9811,7 +9831,8 @@ class AnalysisTab(QWidget):
         try:
             conn = sqlite3.connect(self.db_path)
             cur = conn.cursor()
-            cur.execute("SELECT id, student_name, score, timestamp, detail_json, ai_feedback FROM exam_results ORDER BY id DESC LIMIT 100")
+            # [FIX] Rename timestamp -> submitted_at, detail_json -> detail
+            cur.execute("SELECT id, student_name, score, submitted_at, detail, ai_feedback FROM exam_results ORDER BY id DESC LIMIT 100")
             self.rows = cur.fetchall()
             conn.close()
             
@@ -9852,6 +9873,17 @@ class AnalysisTab(QWidget):
             if record[5]: self.txt_feedback.setText(record[5])
             else: self.txt_feedback.clear()
 
+    def on_ai_finished(self, msg):
+        """Update UI when AI finishes"""
+        self.txt_feedback.setText(msg)
+        self.btn_ai.setText("✨ Phân tích xong")
+        self.btn_ai.setEnabled(True)
+
+    def on_ai_error(self, err):
+        """Handle AI error"""
+        self.txt_feedback.setText(f"Lỗi: {err}")
+        self.btn_ai.setEnabled(True)
+
     def run_ai(self):
         self.btn_ai.setEnabled(False)
         self.btn_ai.setText("⏳ Đang phân tích...")
@@ -9864,7 +9896,16 @@ class AnalysisTab(QWidget):
     def _ai_worker(self):
         try:
             details = json.loads(self.current_json)
-            wrong = [d for d in details if not d['is_correct']]
+            
+            # [FIX] Xử lý trường hợp details là dict (từ DB mới) hoặc list (cũ)
+            if isinstance(details, dict):
+                items = details.values()
+            elif isinstance(details, list):
+                items = details
+            else:
+                items = []
+
+            wrong = [d for d in items if isinstance(d, dict) and not d.get('is_correct')]
             
             if not wrong:
                 msg = "Học sinh làm đúng 100%. Không có lỗi sai!"
@@ -9882,14 +9923,11 @@ class AnalysisTab(QWidget):
             conn.commit()
             conn.close()
             
-            # Update UI (Hack nhẹ để update từ thread)
-            self.txt_feedback.setText(msg)
-            self.btn_ai.setText("✨ Phân tích xong")
-            self.btn_ai.setEnabled(True)
+            # Emit signal to update UI safely
+            self.ai_finished.emit(msg)
             
         except Exception as e:
-            self.txt_feedback.setText(f"Lỗi: {e}")
-            self.btn_ai.setEnabled(True)
+            self.ai_error.emit(str(e))
 # ----------------------------------------------
 # =============================================================================
 # AI CLONER - ĐÃ TÁCH RA KHỎI MAINAPP
@@ -10120,37 +10158,69 @@ def check_and_fix_db():
         conn = sqlite3.connect(DB_PATH)
         cursor = conn.cursor()
         
-        # 1. Tạo bảng nếu chưa có (Giữ nguyên DEFAULT CURRENT_TIMESTAMP cho bảng MỚI)
+        # 1. Tạo bảng nếu chưa có (Chuẩn hóa theo Backend: detail, submitted_at)
         cursor.execute('''
             CREATE TABLE IF NOT EXISTS exam_results (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 student_name TEXT,
                 student_email TEXT,
                 exam_id TEXT,
+                exam_title TEXT,
                 score REAL,
-                detail_json TEXT,
+                detail TEXT,
                 ai_feedback TEXT,
-                timestamp TEXT
+                submitted_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
         ''')
 
-        # 2. Kiểm tra các cột thiếu (Sửa lỗi non-constant default)
+        # 2. Kiểm tra và Migrating cột
         cursor.execute("PRAGMA table_info(exam_results)")
         columns = [info[1] for info in cursor.fetchall()]
+
+        if 'exam_title' not in columns:
+            print("⚠️ Adding: exam_title")
+            cursor.execute("ALTER TABLE exam_results ADD COLUMN exam_title TEXT")
+            conn.commit()
+            
+        if 'exam_id' not in columns:
+            print("⚠️ Adding: exam_id")
+            cursor.execute("ALTER TABLE exam_results ADD COLUMN exam_id TEXT")
+            conn.commit()
         
-        # Sửa lỗi timestamp: Thêm cột TEXT bình thường, sau đó Update dữ liệu
-        if 'timestamp' not in columns:
-            print("⚠️ Thiếu cột 'timestamp'. Đang thêm thủ công...")
-            # Bước 1: Thêm cột không có default dynamic
-            cursor.execute("ALTER TABLE exam_results ADD COLUMN timestamp TEXT")
-            conn.commit()
-            # Bước 2: Điền thời gian hiện tại vào các dòng cũ đang bị NULL
-            cursor.execute("UPDATE exam_results SET timestamp = datetime('now', 'localtime') WHERE timestamp IS NULL")
-            conn.commit()
-            print("✅ Đã thêm cột timestamp thành công.")
+        # [MIGRATION] timestamp -> submitted_at
+        if 'submitted_at' not in columns:
+            if 'timestamp' in columns:
+                print("⚠️ Migrating: timestamp -> submitted_at")
+                try:
+                    cursor.execute("ALTER TABLE exam_results RENAME COLUMN timestamp TO submitted_at")
+                    conn.commit()
+                except:
+                    # Fallback cho SQLite cũ
+                    cursor.execute("ALTER TABLE exam_results ADD COLUMN submitted_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP")
+                    cursor.execute("UPDATE exam_results SET submitted_at = timestamp")
+                    conn.commit()
+            else:
+                print("⚠️ Adding: submitted_at")
+                cursor.execute("ALTER TABLE exam_results ADD COLUMN submitted_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP")
+                conn.commit()
+
+        # [MIGRATION] detail_json -> detail
+        if 'detail' not in columns:
+            if 'detail_json' in columns:
+                print("⚠️ Migrating: detail_json -> detail")
+                try:
+                    cursor.execute("ALTER TABLE exam_results RENAME COLUMN detail_json TO detail")
+                    conn.commit()
+                except:
+                    cursor.execute("ALTER TABLE exam_results ADD COLUMN detail TEXT")
+                    cursor.execute("UPDATE exam_results SET detail = detail_json")
+                    conn.commit()
+            else:
+                cursor.execute("ALTER TABLE exam_results ADD COLUMN detail TEXT")
+                conn.commit()
             
         if 'ai_feedback' not in columns:
-            print("⚠️ Thiếu cột 'ai_feedback'. Đang thêm...")
+            print("⚠️ Adding: ai_feedback")
             cursor.execute("ALTER TABLE exam_results ADD COLUMN ai_feedback TEXT")
             conn.commit()
             
