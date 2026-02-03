@@ -53,6 +53,7 @@ import subprocess
 import platform
 import warnings
 import os.path
+import threading
 # =============================================================================
 # MODULE BẢN QUYỀN (LICENSE SYSTEM)
 # =============================================================================
@@ -5242,6 +5243,8 @@ import json
 import asyncio
 import socket
 
+# (Đã xóa pyngrok)
+
 class ConnectionManager:
     def __init__(self):
         self.active_connections: dict = {}
@@ -5300,17 +5303,10 @@ class WebServerThread(QThread):
         self.db_path = db_path
         self.ai_engine = ai_engine
         self.port = 8080
-        
-        # [QUAN TRỌNG] Nhớ điền Token thật của bạn vào đây
-        # Ví dụ: self.ngrok_auth_token = "2Alk..."
-        self.ngrok_auth_token = "38b8oxhy3hT98ZoeqO7kl8RJaJP_axFQ8v4mjEtV5EvSwLzb"
-        
         self.public_url = ""
-        
-        # [ĐÃ SỬA] Thêm lại dòng này để tránh lỗi Attribute Error
         self.ip_address = "0.0.0.0" 
-        
         self.gg_sync = None 
+        self.tunnel_process = None
         
         # Thư mục chứa các file đề thi riêng biệt
         self.exam_dir = os.path.join(os.path.expanduser("~"), ".bankai_exams")
@@ -5676,51 +5672,76 @@ class WebServerThread(QThread):
 
             except: pass
 
-        # Kết nối Ngrok
-        MY_DOMAIN = "oncologic-premeditative-nada.ngrok-free.dev"
-        try:
-            ngrok.kill()
-            success = False
-
-            # 1. Thử kết nối với Domain cố định (Nếu có)
-            if MY_DOMAIN and "ngrok-free.dev" in MY_DOMAIN:
-                try:
-                    print(f"🔄 Connecting to custom domain: {MY_DOMAIN}")
-                    import time; time.sleep(1)
-                    self.public_url = ngrok.connect(self.port, domain=MY_DOMAIN).public_url
-                    self.server_ready.emit(self.public_url)
-                    success = True
-                except Exception as e:
-                    print(f"⚠️ Custom domain failed: {e}")
-
-            # 2. Nếu thất bại, fallback sang random domain
-            if not success:
-                print("🔄 Falling back to random domain...")
-                self.public_url = ngrok.connect(self.port).public_url
-                self.server_ready.emit(self.public_url)
-
-        except Exception as e:
-            self.server_ready.emit(f"Lỗi Ngrok: {e}")
-            print(f"❌ Ngrok Fatal Error: {e}")
+        # Start Cloudflare Tunnel
+        self.start_cloudflare_tunnel()
 
         import uvicorn
         config = uvicorn.Config(app, host="0.0.0.0", port=self.port, log_level="critical", proxy_headers=True)
         self.server = uvicorn.Server(config)
         self.server.run()
 
+    def start_cloudflare_tunnel(self):
+        """Khởi động Cloudflare Tunnel và lấy URL"""
+        if not shutil.which("cloudflared"):
+            self.server_ready.emit("Lỗi: Chưa cài đặt cloudflared! Vui lòng cài đặt và thêm vào PATH.")
+            return
+
+        try:
+            # Chạy cloudflared tunnel
+            # Lưu ý: cloudflared in URL ra stderr
+            self.tunnel_process = subprocess.Popen(
+                ["cloudflared", "tunnel", "--url", f"http://localhost:{self.port}"],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                bufsize=1,
+                universal_newlines=True
+            )
+
+            # Tạo thread đọc log để lấy URL
+            t = threading.Thread(target=self._monitor_tunnel_log, daemon=True)
+            t.start()
+
+        except Exception as e:
+            self.server_ready.emit(f"Lỗi khởi động Cloudflare: {e}")
+
+    def _monitor_tunnel_log(self):
+        """Đọc log từ cloudflared để tìm URL"""
+        found = False
+        while self.tunnel_process and self.tunnel_process.poll() is None:
+            line = self.tunnel_process.stderr.readline()
+            if not line:
+                break
+
+            print(f"[Cloudflare] {line.strip()}") # Debug log
+
+            # Tìm dòng chứa URL .trycloudflare.com
+            if ".trycloudflare.com" in line and not found:
+                match = re.search(r'https://[a-zA-Z0-9-]+\.trycloudflare\.com', line)
+                if match:
+                    self.public_url = match.group(0)
+                    self.server_ready.emit(self.public_url)
+                    found = True
+                    # Không break, tiếp tục đọc để giữ pipe không bị đầy
+
+        if not found and self.tunnel_process:
+             self.server_ready.emit("Không tìm thấy URL Cloudflare. Kiểm tra log.")
+
     def stop(self):
-        """Dừng server và ngrok an toàn"""
+        """Dừng server và Cloudflare an toàn"""
         if hasattr(self, 'server') and self.server:
             self.server.should_exit = True
         
-        try:
-            from pyngrok import ngrok
-            ngrok.kill()
-            # Force kill
-            if sys.platform != "win32":
-                os.system("pkill -9 ngrok")
-        except:
-            pass
+        if self.tunnel_process:
+            try:
+                self.tunnel_process.terminate()
+                # self.tunnel_process.wait(timeout=2)
+            except: pass
+            self.tunnel_process = None
+
+        if sys.platform != "win32":
+            try: os.system("pkill -9 cloudflared")
+            except: pass
         
         # Đợi tối đa 3 giây để luồng kết thúc, nếu không thì ép tắt
         if not self.wait(3000):
