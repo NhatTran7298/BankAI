@@ -9640,11 +9640,9 @@ class MainApp(QMainWindow):
         return questions, source
     
     # --- CẬP NHẬT HÀM on_student_submit TRONG MainApp ---
-    def on_student_submit(self, data):
+    def on_student_submit(self, name, score):
         """Xử lý khi học sinh nộp bài"""
-        # data thường có dạng: {'name': 'Nguyen Van A', 'score': 8.5, 'detail': ...}
-        name = data.get('name', 'Unknown')
-        score = float(data.get('score', 0))
+        # [FIXED] Nhận trực tiếp name (str) và score (float) từ signal result_received
         
         # 1. Logic cũ: Hiển thị thông báo/Cập nhật bảng điểm
         msg = f"📩 {name} vừa nộp bài! Điểm: {score}"
@@ -9657,14 +9655,13 @@ class MainApp(QMainWindow):
             # Tìm email của học sinh này (vì Classroom cần Email, nhưng Web trả về Tên)
             student_email = None
             
-            # Cách 1: Nếu Web trả về email (Tốt nhất)
-            if 'email' in data and data['email']:
-                student_email = data['email']
-            
+            # [FIXED] Bỏ qua cách tìm email từ data (vì không còn data dict)
             # Cách 2: Tìm trong danh sách lớp đang load (Fallback)
-            elif self.current_students:
+            if self.current_students:
                 for s in self.current_students:
-                    if s['name'] == name:
+                    # name ở đây có thể là "Ten HS - Ten De Thi" do server emit
+                    # nên ta dùng 'in' để tìm tên HS trong chuỗi đó
+                    if s['name'] in name:
                         student_email = s['email']
                         break
             
@@ -9685,11 +9682,8 @@ class MainApp(QMainWindow):
                         
                 threading.Thread(target=run_sync, daemon=True).start()
             else:
-                print(f"⚠️ Không tìm thấy Email cho học sinh {name}, bỏ qua đồng bộ.")
-    # -----------------------------------------------------
+                print(f"⚠️ Không tìm thấy Email cho học sinh trong chuỗi '{name}', bỏ qua đồng bộ.")
 
-# --- CHÈN VÀO CUỐI CLASS MAINAPP ---
-    
     def load_classroom_courses(self):
         try:
             courses = self.gc_manager.get_courses()
