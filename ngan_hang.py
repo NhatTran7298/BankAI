@@ -9754,11 +9754,20 @@ from matplotlib.figure import Figure
 import threading
 
 class AnalysisTab(QWidget):
+    # Signals for thread communication
+    ai_finished = pyqtSignal(str)
+    ai_error = pyqtSignal(str)
+
     def __init__(self, db_path, ai_engine):
         super().__init__()
         self.db_path = db_path
         self.ai_engine = ai_engine
         self.current_id = None
+
+        # Connect signals
+        self.ai_finished.connect(self.on_ai_finished)
+        self.ai_error.connect(self.on_ai_error)
+
         self.init_ui()
 
     def init_ui(self):
@@ -9862,6 +9871,17 @@ class AnalysisTab(QWidget):
             if record[5]: self.txt_feedback.setText(record[5])
             else: self.txt_feedback.clear()
 
+    def on_ai_finished(self, msg):
+        """Update UI when AI finishes"""
+        self.txt_feedback.setText(msg)
+        self.btn_ai.setText("✨ Phân tích xong")
+        self.btn_ai.setEnabled(True)
+
+    def on_ai_error(self, err):
+        """Handle AI error"""
+        self.txt_feedback.setText(f"Lỗi: {err}")
+        self.btn_ai.setEnabled(True)
+
     def run_ai(self):
         self.btn_ai.setEnabled(False)
         self.btn_ai.setText("⏳ Đang phân tích...")
@@ -9892,14 +9912,11 @@ class AnalysisTab(QWidget):
             conn.commit()
             conn.close()
             
-            # Update UI (Hack nhẹ để update từ thread)
-            self.txt_feedback.setText(msg)
-            self.btn_ai.setText("✨ Phân tích xong")
-            self.btn_ai.setEnabled(True)
+            # Emit signal to update UI safely
+            self.ai_finished.emit(msg)
             
         except Exception as e:
-            self.txt_feedback.setText(f"Lỗi: {e}")
-            self.btn_ai.setEnabled(True)
+            self.ai_error.emit(str(e))
 # ----------------------------------------------
 # =============================================================================
 # AI CLONER - ĐÃ TÁCH RA KHỎI MAINAPP
