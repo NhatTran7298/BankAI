@@ -4941,10 +4941,16 @@ WEB_UI_TEMPLATE = """
     </div>
 
     <div id="score-modal">
-        <div class="score-box">
+        <div class="score-box" style="max-width: 800px;">
             <div class="text-6xl mb-4">🏆</div>
             <h2 class="text-3xl font-bold text-gray-800 mb-2">KẾT QUẢ</h2>
             <div class="text-5xl font-bold text-blue-600 my-6"><span id="final-score">0</span> điểm</div>
+
+            <div id="ai-section" class="hidden text-left bg-blue-50 p-4 rounded-lg border border-blue-200 mb-6 max-h-60 overflow-y-auto">
+                <div class="font-bold text-blue-800 mb-2 flex items-center gap-2"><span>🤖</span> <span>TRỢ LÝ AI PHÂN TÍCH & GÓP Ý:</span></div>
+                <div id="ai-feedback" class="text-sm text-gray-700 whitespace-pre-wrap leading-relaxed"></div>
+            </div>
+
             <div class="text-sm text-green-600 font-bold mb-6">Đã lưu kết quả vào hệ thống!</div>
             <button onclick="enterReviewMode()" class="bg-gray-500 hover:bg-gray-600 text-white font-bold py-2 px-6 rounded shadow">Xem lại bài làm</button>
         </div>
@@ -5054,6 +5060,13 @@ WEB_UI_TEMPLATE = """
             document.getElementById('final-score').innerText = data.score.toFixed(2);
             document.getElementById('score-modal').style.display = 'flex';
             savedReviewData = data.review_data;
+
+            if (data.ai_feedback) {
+                document.getElementById('ai-feedback').innerText = data.ai_feedback;
+                document.getElementById('ai-section').classList.remove('hidden');
+            } else {
+                document.getElementById('ai-section').classList.add('hidden');
+            }
         }
 
         function enterReviewMode() {
@@ -5282,9 +5295,10 @@ class WebServerThread(QThread):
     server_ready = pyqtSignal(str)
     result_received = pyqtSignal(str, float)
 
-    def __init__(self, db_path):
+    def __init__(self, db_path, ai_engine=None):
         super().__init__()
         self.db_path = db_path
+        self.ai_engine = ai_engine
         self.port = 8080
         
         # [QUAN TRỌNG] Nhớ điền Token thật của bạn vào đây
@@ -5613,11 +5627,37 @@ class WebServerThread(QThread):
                             # 2. Chấm điểm Server-side
                             final_score, review_data = self.calculate_score(target_matrix, user_answers)
 
+                            # --- AI FEEDBACK GENERATION ---
+                            ai_feedback = ""
+                            if self.ai_engine and self.ai_engine.is_ready:
+                                try:
+                                    items = list(review_data.values())
+                                    wrong = [d for d in items if isinstance(d, dict) and not d.get('is_correct')]
+                                    if wrong:
+                                        minimized_wrong = []
+                                        for w in wrong:
+                                            minimized_wrong.append({
+                                                "type": w.get("type"),
+                                                "explanation": w.get("explanation", "")[:300],
+                                                "correct": w.get("correct_answer"),
+                                                "user": w.get("user_selected")
+                                            })
+
+                                        prompt = f"Học sinh làm sai các câu sau: {json.dumps(minimized_wrong, ensure_ascii=False)}. Hãy phân tích ngắn gọn lỗi sai (dựa vào lời giải) và đưa ra lời khuyên ôn tập (tối đa 150 từ)."
+                                        # Use to_thread to avoid blocking event loop
+                                        response = await asyncio.to_thread(self.ai_engine.model.generate_content, prompt)
+                                        ai_feedback = response.text
+                                    else:
+                                        ai_feedback = "Chúc mừng! Bạn đã trả lời đúng tất cả các câu hỏi."
+                                except Exception as e:
+                                    print(f"AI Gen Error: {e}")
+                            # ------------------------------
+
                             # 3. Lưu kết quả (Lưu full review data vào DB)
                             try:
                                 conn = sqlite3.connect(self.db_path)
-                                conn.execute("INSERT INTO exam_results (student_name, exam_title, score, detail) VALUES (?, ?, ?, ?)",
-                                    (f"{data['name']} ({data['email']})", exam_data.get('title'), final_score, json.dumps(review_data, ensure_ascii=False)))
+                                conn.execute("INSERT INTO exam_results (student_name, exam_title, score, detail, ai_feedback) VALUES (?, ?, ?, ?, ?)",
+                                    (f"{data['name']} ({data['email']})", exam_data.get('title'), final_score, json.dumps(review_data, ensure_ascii=False), ai_feedback))
                                 conn.commit(); conn.close()
                                 
                                 self.result_received.emit(f"{data['name']} - {exam_data.get('title')}", float(final_score))
@@ -5629,7 +5669,8 @@ class WebServerThread(QThread):
                                 "type": "SCORE_RESULT", 
                                 "data": {
                                     "score": final_score,
-                                    "review_data": review_data
+                                    "review_data": review_data,
+                                    "ai_feedback": ai_feedback
                                 }
                             })
 
@@ -9445,7 +9486,7 @@ class MainApp(QMainWindow):
                 self.pd_prep.show()
                 
                 # Khởi tạo Server nếu chưa có
-                if not hasattr(self, 'web_thread'): self.web_thread = WebServerThread(DB_PATH)
+                if not hasattr(self, 'web_thread'): self.web_thread = WebServerThread(DB_PATH, self.ai)
                 
                 # Chạy Worker biên dịch PDF (Không truyền external_tex để dùng Main hệ thống)
                 self.prep_worker = ExamPreparerWorker(config['questions'], exam_title, config['time'], num_variants=config.get('num_variants', 1))
