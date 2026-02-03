@@ -2,6 +2,19 @@
 import os
 import sys
 
+# --- CHÈN THÊM VÀO ĐẦU FILE (Sau các import khác) ---
+import pickle
+from google_auth_oauthlib.flow import InstalledAppFlow
+from google.auth.transport.requests import Request
+from googleapiclient.discovery import build
+
+# Các quyền cần thiết: Đọc khóa học, đọc danh sách học sinh, chấm điểm
+SCOPES = [
+    'https://www.googleapis.com/auth/classroom.courses.readonly',
+    'https://www.googleapis.com/auth/classroom.rosters.readonly',
+    'https://www.googleapis.com/auth/classroom.coursework.students'
+]
+# -----------------------------------------------------
 # [QUAN TRỌNG] Cấu hình PATH cho macOS để tìm thấy pdflatex và poppler khi chạy dạng .app
 if sys.platform == 'darwin':
     os.environ['PATH'] += ':/usr/local/bin:/opt/homebrew/bin:/Library/TeX/texbin'
@@ -1994,6 +2007,10 @@ class ModernSidebar(QWidget):
         self.btn_manual = self.add_btn(layout, "✏️  Soạn đề Thủ công", 1)
         self.btn_matrix = self.add_btn(layout, "🎲  Ma trận 2025 (Auto)", 2)
         self.btn_ai = self.add_btn(layout, "🤖  AI Generator", 3)
+        # --- [CHÈN VÀO ĐÂY] ---
+        self.btn_classroom = self.add_btn(layout, "🏫  Google Classroom", 4)
+        self.btn_dashboard = self.add_btn(layout, "📊 Thống kê & Phân tích", 5)
+        # ----------------------
         
         layout.addStretch()
         
@@ -5383,6 +5400,69 @@ class WebServerThread(QThread):
                         u_val = ua.get(sub)
                         is_corr = (u_val == k_val)
                         if is_corr: correct_count += 1
+                        # ========================================================
+                    # [BẮT ĐẦU ĐOẠN CODE CHÈN THÊM - BƯỚC 2]
+                    # ========================================================
+                    # ========================================================
+                    # [CODE MỚI ĐÃ SỬA LỖI TIMESTAMP]
+                    # ========================================================
+                    try:
+                        # 1. Tạo thời gian hiện tại từ Python (Thay vì để SQL tự sinh)
+                        current_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+                        # 2. Tạo dữ liệu chi tiết (Log bài làm)
+                        results_log = []
+                        questions_list = data.get('questions', []) 
+                        
+                        for q in questions_list:
+                            q_id_str = str(q['id'])
+                            stu_ans = user_answers.get(q_id_str, user_answers.get(int(q_id_str), ""))
+                            cor_ans = q.get('correct', "")
+                            is_right = str(stu_ans).strip().lower() == str(cor_ans).strip().lower()
+                            
+                            results_log.append({
+                                "question": q.get('content', ""),
+                                "student_ans": stu_ans,
+                                "correct_ans": cor_ans,
+                                "is_correct": is_right
+                            })
+                        
+                        detail_json = json.dumps(results_log, ensure_ascii=False)
+                        
+                        # 3. Lấy thông tin học sinh
+                        p_name = payload.get('student_name', 'Học sinh ẩn danh')
+                        p_email = payload.get('student_email', '')
+                        p_exam_id = payload.get('exam_id', 'unknown')
+                        
+                        # 4. Ghi vào Database (Có thêm cột timestamp)
+                        with sqlite3.connect(DB_PATH) as conn:
+                            cursor = conn.cursor()
+                            
+                            # Đảm bảo bảng tồn tại với cấu trúc mới (timestamp là TEXT)
+                            cursor.execute('''CREATE TABLE IF NOT EXISTS exam_results (
+                                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                                student_name TEXT, 
+                                student_email TEXT, 
+                                exam_id TEXT,
+                                score REAL, 
+                                detail_json TEXT, 
+                                ai_feedback TEXT,
+                                timestamp TEXT
+                            )''')
+                            
+                            # CÂU LỆNH QUAN TRỌNG NHẤT: Thêm cột timestamp và giá trị current_time
+                            cursor.execute("""
+                                INSERT INTO exam_results (student_name, student_email, exam_id, score, detail_json, timestamp)
+                                VALUES (?, ?, ?, ?, ?, ?)
+                            """, (p_name, p_email, p_exam_id, score, detail_json, current_time))
+                            
+                            conn.commit()
+                            
+                        print(f"✅ [SERVER] Đã lưu kết quả lúc {current_time}: {p_name} - {score} điểm")
+                        
+                    except Exception as e_save:
+                        print(f"❌ [SERVER ERROR] Lỗi lưu điểm: {e_save}")
+                    # ========================================================
                         sub_details[sub] = {'correct': is_corr, 'user': u_val, 'key': k_val}
                 
                 ratio = {1: 0.1, 2: 0.25, 3: 0.5, 4: 1.0}.get(correct_count, 0)
@@ -5494,10 +5574,39 @@ class WebServerThread(QThread):
             data = self.load_exam_file(exam_id)
             if data:
                 # Inject Student List
-                students = data.get('students', [])
-                json_students = json.dumps(students, ensure_ascii=False).replace("</script>", "<\\/script>")
-                html = WEB_UI_TEMPLATE.replace("__STUDENT_LIST__", json_students)
-                return HTMLResponse(content=html)
+                s# --- [BẮT ĐẦU ĐOẠN CODE MỚI PHẦN 5] ---
+            
+            # 1. Khởi tạo danh sách học sinh
+            final_students = []
+            
+            # 2. Cố gắng lấy danh sách từ Database (Do Classroom đồng bộ về)
+            try:
+                # DB_PATH là biến toàn cục chứa đường dẫn file .db của bạn
+                conn = sqlite3.connect(DB_PATH)
+                cursor = conn.cursor()
+                # Lấy tên và email từ bảng students
+                cursor.execute("SELECT name, email FROM students")
+                rows = cursor.fetchall()
+                conn.close()
+                
+                if rows:
+                    for r_name, r_email in rows:
+                        final_students.append({"name": r_name, "email": r_email})
+                    print(f"Server: Đã load {len(final_students)} học sinh từ Database.")
+            except Exception as e:
+                print(f"Server: Không đọc được DB Students ({e}). Dùng danh sách từ file đề.")
+
+            # 3. Fallback: Nếu DB rỗng (chưa đồng bộ), dùng lại danh sách cũ trong file đề
+            if not final_students:
+                final_students = data.get('students', [])
+
+            # 4. Chuyển đổi sang JSON để chèn vào HTML
+            # ensure_ascii=False để giữ tiếng Việt không bị lỗi font
+            json_students = json.dumps(final_students, ensure_ascii=False).replace("</script>", "<\\/script>")
+            
+            # 5. Thay thế placeholder trong HTML
+            html_content = WEB_UI_TEMPLATE.replace("__STUDENT_LIST__", json_students)
+            return HTMLResponse(content=html)
             return HTMLResponse(content="<h1>❌ Đề thi không tồn tại hoặc đã bị xóa!</h1>")
 
         @app.get("/api/pdf/{filename}")
@@ -7212,6 +7321,124 @@ class MatrixEditorDialog(QDialog):
             return
         self.accept()
 
+# --- CHÈN TRƯỚC CLASS MAINAPP ---
+class GoogleClassroomManager:
+    def __init__(self):
+        self.creds = None
+        self.service = None
+        self.authenticate()
+
+    def authenticate(self):
+        """Xác thực với Google và lấy token"""
+        if os.path.exists('token.pickle'):
+            with open('token.pickle', 'rb') as token:
+                self.creds = pickle.load(token)
+        
+        if not self.creds or not self.creds.valid:
+            if self.creds and self.creds.expired and self.creds.refresh_token:
+                self.creds.refresh(Request())
+            else:
+                # Yêu cầu file credentials.json phải nằm cùng thư mục
+                if not os.path.exists('credentials.json'):
+                    print("Thiếu file credentials.json!")
+                    return
+                flow = InstalledAppFlow.from_client_secrets_file(
+                    'credentials.json', SCOPES)
+                self.creds = flow.run_local_server(port=0)
+            
+            with open('token.pickle', 'wb') as token:
+                pickle.dump(self.creds, token)
+
+        self.service = build('classroom', 'v1', credentials=self.creds)
+
+    def get_courses(self):
+        """Lấy danh sách các lớp học đang hoạt động"""
+        if not self.service: return []
+        results = self.service.courses().list(courseStates=['ACTIVE']).execute()
+        return results.get('courses', [])
+
+    def get_students(self, course_id):
+        """Lấy danh sách học sinh của một lớp: Tên, Email, ID"""
+        students_list = []
+        page_token = None
+        while True:
+            response = self.service.courses().students().list(
+                courseId=course_id, pageToken=page_token).execute()
+            students = response.get('students', [])
+            for s in students:
+                profile = s.get('profile', {})
+                students_list.append({
+                    'id': s.get('userId'),
+                    'name': profile.get('name', {}).get('fullName'),
+                    'email': profile.get('emailAddress')
+                })
+            page_token = response.get('nextPageToken', None)
+            if not page_token: break
+        return students_list
+
+    def get_assignments(self, course_id):
+        """Lấy danh sách bài tập của lớp"""
+        results = self.service.courses().courseWork().list(
+            courseId=course_id, orderBy="updateTime desc").execute()
+        return results.get('courseWork', [])
+
+    def push_grade(self, course_id, coursework_id, student_email, score):
+        """Đẩy điểm số lên Classroom"""
+        # 1. Tìm submission ID của học sinh
+        subs = self.service.courses().courseWork().studentSubmissions().list(
+            courseId=course_id, courseWorkId=coursework_id, userId='all').execute()
+        
+        target_sub = None
+        for sub in subs.get('studentSubmissions', []):
+            # API trả về userId, ta cần so khớp ID này với email (logic so khớp cần mapping)
+            # Để đơn giản, ở đây ta giả định đã map được hoặc lấy user profile
+            # Cách an toàn nhất: Lấy user profile của submission
+            user_profile = self.service.userProfiles().get(userId=sub['userId']).execute()
+            if user_profile.get('emailAddress') == student_email:
+                target_sub = sub
+                break
+        
+        if target_sub:
+            body = {
+                'assignedGrade': score,
+                'draftGrade': score
+            }
+            self.service.courses().courseWork().studentSubmissions().patch(
+                courseId=course_id,
+                courseWorkId=coursework_id,
+                id=target_sub['id'],
+                updateMask='assignedGrade,draftGrade',
+                body=body
+            ).execute()
+            return True
+        return False
+# -----------------------------------------------------
+
+    # --- [BƯỚC 1: HÀM KHỞI TẠO BẢNG KẾT QUẢ] ---
+def create_results_table(db_path):
+    """Tạo bảng lưu kết quả thi nếu chưa có"""
+    try:
+        conn = sqlite3.connect(db_path)
+        c = conn.cursor()
+        c.execute('''
+            CREATE TABLE IF NOT EXISTS exam_results (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                student_name TEXT,
+                student_email TEXT,
+                exam_id TEXT,
+                score REAL,
+                detail_json TEXT,
+                ai_feedback TEXT,
+                timestamp DATETIME DEFAULT CURRENT_TIMESTAMP
+            )
+        ''')
+        conn.commit()
+        conn.close()
+        print("✅ Đã kiểm tra/tạo bảng exam_results.")
+    except Exception as e:
+        print(f"❌ Lỗi tạo bảng exam_results: {e}")
+# ---------------------------------------------
+
 class MainApp(QMainWindow):
     def apply_theme(self):
         """
@@ -7476,7 +7703,8 @@ class MainApp(QMainWindow):
         super().__init__()
         self.bk = Backend()
         self.ai = AIEngine(api_key)
-        
+        self.gc_manager = GoogleClassroomManager()
+        self.current_students = []
         # Dọn dẹp cache ngầm
         self.cleanup_worker = CacheCleanupWorker()
         self.cleanup_worker.start()
@@ -7523,7 +7751,16 @@ class MainApp(QMainWindow):
         self.stack.addWidget(self.create_manual_tab()) # Index 1
         self.stack.addWidget(self.create_matrix_tab()) # Index 2
         self.stack.addWidget(self.create_ai_tab())     # Index 3
+        self.stack.addWidget(self.create_classroom_tab()) # Index 4
+        # Chèn vào MainApp.__init__
         
+        # Tạo tab Dashboard (Truyền DB_PATH và self.ai vào)
+        self.dashboard_tab = AnalysisTab(DB_PATH, self.ai)
+        self.stack.addWidget(self.dashboard_tab) # Index tương ứng là 5 (nếu bạn đã thêm Classroom là 4)
+        
+        # Kết nối sự kiện nút bấm
+        self.sidebar.btn_dashboard.clicked.connect(lambda: self.stack.setCurrentIndex(5))
+
         content_layout.addWidget(self.stack)
         
         self.lbl_stat = QLabel(" Ready"); 
@@ -8235,6 +8472,72 @@ class MainApp(QMainWindow):
         
         l.addWidget(lw, 1); l.addWidget(rw, 2)
         return w
+
+    # --- [CHÈN HÀM MỚI VÀO ĐÂY] ---
+    def create_classroom_tab(self):
+        """Tạo giao diện Tab Google Classroom"""
+        widget = QWidget()
+        layout = QVBoxLayout(widget)
+        layout.setContentsMargins(30, 30, 30, 30)
+        layout.setSpacing(20)
+
+        # Tiêu đề
+        lbl_title = QLabel("QUẢN LÝ LỚP HỌC & ĐỒNG BỘ")
+        lbl_title.setStyleSheet("font-size: 22px; font-weight: 900; color: #ED840D; letter-spacing: 1px;")
+        layout.addWidget(lbl_title)
+
+        # --- Group 1: Kết nối & Đồng bộ ---
+        gb_sync = QGroupBox("1. KẾT NỐI DANH SÁCH LỚP")
+        gb_layout = QVBoxLayout(gb_sync)
+        gb_layout.setSpacing(15)
+        
+        hbox1 = QHBoxLayout()
+        self.cb_courses = QComboBox()
+        self.cb_courses.setMinimumHeight(45)
+        self.btn_load_courses = QPushButton("🔄 Danh Sách Lớp")
+        self.btn_load_courses.setFixedSize(160, 45)
+        self.btn_load_courses.clicked.connect(self.load_classroom_courses)
+        
+        hbox1.addWidget(QLabel("Chọn lớp học:"))
+        hbox1.addWidget(self.cb_courses, 1)
+        hbox1.addWidget(self.btn_load_courses)
+        
+        btn_sync = QPushButton("⬇️  Đồng bộ Học sinh vào Hệ thống Thi Online")
+        btn_sync.setProperty("class", "btn-primary") # Style cam nổi bật
+        btn_sync.setMinimumHeight(50)
+        btn_sync.setStyleSheet("font-size: 16px; font-weight: bold;")
+        btn_sync.clicked.connect(self.sync_students_to_db)
+        
+        gb_layout.addLayout(hbox1)
+        gb_layout.addWidget(btn_sync)
+        layout.addWidget(gb_sync)
+
+        # --- Group 2: Trả điểm ---
+        gb_grade = QGroupBox("2. LIÊN KẾT BÀI TẬP (ĐỂ TRẢ ĐIỂM)")
+        gb_grade_layout = QVBoxLayout(gb_grade)
+        
+        hbox2 = QHBoxLayout()
+        self.cb_assignments = QComboBox()
+        self.cb_assignments.setMinimumHeight(45)
+        self.btn_load_assign = QPushButton("📂 Tải Bài Tập")
+        self.btn_load_assign.setFixedSize(160, 45)
+        self.btn_load_assign.clicked.connect(self.load_classroom_assignments)
+        
+        hbox2.addWidget(QLabel("Gán vào bài tập:"))
+        hbox2.addWidget(self.cb_assignments, 1)
+        hbox2.addWidget(self.btn_load_assign)
+        
+        gb_grade_layout.addLayout(hbox2)
+        
+        note_lbl = QLabel("ℹ️ Lưu ý: Hãy chọn đúng bài tập tương ứng trên Classroom. Khi học sinh nộp bài thi, điểm sẽ được gửi vào bài tập này.")
+        note_lbl.setStyleSheet("color: #ccc; font-style: italic; margin-top: 10px;")
+        gb_grade_layout.addWidget(note_lbl)
+        
+        layout.addWidget(gb_grade)
+        layout.addStretch()
+        
+        return widget
+    # ------------------------------
 
     def export_ai_results(self):
         """Xuất toàn bộ các đề đã được AI tạo ra file .tex chuẩn"""
@@ -9333,19 +9636,261 @@ class MainApp(QMainWindow):
 
         return questions, source
     
-    # --- THÊM HÀM NÀY VÀO CLASS MainApp ---
-    def on_student_submit(self, name, score):
-        """Hàm được gọi khi có học sinh nộp bài"""
-        # Hiển thị thông báo dưới thanh trạng thái
-        msg = f"📩 {name} vừa nộp bài! Điểm số: {score}"
+    # --- CẬP NHẬT HÀM on_student_submit TRONG MainApp ---
+    def on_student_submit(self, data):
+        """Xử lý khi học sinh nộp bài"""
+        # data thường có dạng: {'name': 'Nguyen Van A', 'score': 8.5, 'detail': ...}
+        name = data.get('name', 'Unknown')
+        score = float(data.get('score', 0))
+        
+        # 1. Logic cũ: Hiển thị thông báo/Cập nhật bảng điểm
+        msg = f"📩 {name} vừa nộp bài! Điểm: {score}"
         self.statusBar().showMessage(msg, 5000)
         
-        # (Tùy chọn) In ra console để theo dõi
-        print(f"DEBUG: {msg}")
+        # 2. [MỚI] Logic Sync Google Classroom
+        # Kiểm tra xem người dùng có đang chọn lớp/bài tập để đồng bộ không
+        if hasattr(self, 'tab_classroom') and self.cb_courses.currentData() and self.cb_assignments.currentData():
+            
+            # Tìm email của học sinh này (vì Classroom cần Email, nhưng Web trả về Tên)
+            student_email = None
+            
+            # Cách 1: Nếu Web trả về email (Tốt nhất)
+            if 'email' in data and data['email']:
+                student_email = data['email']
+            
+            # Cách 2: Tìm trong danh sách lớp đang load (Fallback)
+            elif self.current_students:
+                for s in self.current_students:
+                    if s['name'] == name:
+                        student_email = s['email']
+                        break
+            
+            # Tiến hành đẩy điểm
+            if student_email:
+                print(f"🔄 Đang đồng bộ điểm cho {student_email}...")
+                
+                # Chạy trong thread riêng để không đơ App
+                import threading
+                def run_sync():
+                    try:
+                        course_id = self.cb_courses.currentData()
+                        assign_id = self.cb_assignments.currentData()
+                        self.gc_manager.push_grade(course_id, assign_id, student_email, score)
+                        print(f"✅ Đã đồng bộ điểm lên Classroom: {name} - {score}")
+                    except Exception as e:
+                        print(f"❌ Lỗi đồng bộ Classroom: {e}")
+                        
+                threading.Thread(target=run_sync, daemon=True).start()
+            else:
+                print(f"⚠️ Không tìm thấy Email cho học sinh {name}, bỏ qua đồng bộ.")
+    # -----------------------------------------------------
+
+# --- CHÈN VÀO CUỐI CLASS MAINAPP ---
+    
+    def load_classroom_courses(self):
+        try:
+            courses = self.gc_manager.get_courses()
+            self.cb_courses.clear()
+            for c in courses:
+                # Lưu ID vào data của item combo box
+                self.cb_courses.addItem(c['name'], userData=c['id'])
+            QMessageBox.information(self, "Thành công", f"Đã tải {len(courses)} lớp học.")
+        except Exception as e:
+            QMessageBox.warning(self, "Lỗi", f"Không thể tải lớp: {str(e)}")
+
+    def sync_students_to_db(self):
+        """Lấy danh sách HS từ Classroom và lưu vào biến toàn cục/DB để dùng khi thi"""
+        course_id = self.cb_courses.currentData()
+        if not course_id: return
+
+        try:
+            students = self.gc_manager.get_students(course_id)
+            self.current_students = students # Lưu vào biến class
+            
+            # CẬP NHẬT DATABASE HOẶC FILE CẤU HÌNH
+            # Giả sử bạn đang dùng SQLite table 'students' (nếu chưa có thì tạo)
+            conn = sqlite3.connect(DB_PATH)
+            cursor = conn.cursor()
+            cursor.execute("CREATE TABLE IF NOT EXISTS students (email TEXT PRIMARY KEY, name TEXT, uid TEXT)")
+            cursor.execute("DELETE FROM students") # Xóa danh sách cũ (làm mới theo lớp)
+            
+            count = 0
+            for s in students:
+                cursor.execute("INSERT OR REPLACE INTO students (email, name, uid) VALUES (?, ?, ?)", 
+                               (s['email'], s['name'], s['id']))
+                count += 1
+            conn.commit()
+            conn.close()
+            
+            QMessageBox.information(self, "Đồng bộ xong", 
+                                    f"Đã cập nhật {count} học sinh.\n"
+                                    "Khi mở Server thi, danh sách này sẽ được dùng.")
+        except Exception as e:
+            QMessageBox.warning(self, "Lỗi", f"Lỗi đồng bộ: {str(e)}")
+
+    def load_classroom_assignments(self):
+        course_id = self.cb_courses.currentData()
+        if not course_id: return
+        try:
+            assigns = self.gc_manager.get_assignments(course_id)
+            self.cb_assignments.clear()
+            for a in assigns:
+                self.cb_assignments.addItem(a['title'], userData=a['id'])
+        except Exception as e: pass
+    # -----------------------------------
+
+    # --- [CHÈN VÀO TRƯỚC CLASS MAINAPP] ---
+from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
+from matplotlib.figure import Figure
+import threading
+
+class AnalysisTab(QWidget):
+    def __init__(self, db_path, ai_engine):
+        super().__init__()
+        self.db_path = db_path
+        self.ai_engine = ai_engine
+        self.current_id = None
+        self.init_ui()
+
+    def init_ui(self):
+        main_layout = QHBoxLayout(self)
         
-        # Nếu muốn hiện thông báo nổi (System Tray) nếu có
-        if hasattr(self, 'tray_icon'):
-            self.tray_icon.showMessage("Kết quả thi", msg)
+        # --- CỘT TRÁI: DANH SÁCH & BIỂU ĐỒ ---
+        left_layout = QVBoxLayout()
+        
+        # Bảng danh sách
+        self.table = QTableWidget()
+        self.table.setColumnCount(4)
+        self.table.setHorizontalHeaderLabels(["Học sinh", "Điểm", "Ngày nộp", "ID"])
+        self.table.hideColumn(3) # Ẩn cột ID
+        self.table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
+        self.table.cellClicked.connect(self.on_row_click)
+        
+        btn_load = QPushButton("🔄 Tải dữ liệu mới nhất")
+        btn_load.clicked.connect(self.load_data)
+        
+        # Biểu đồ
+        self.figure = Figure(figsize=(5, 3), dpi=100)
+        self.canvas = FigureCanvas(self.figure)
+        
+        left_layout.addWidget(QLabel("<b>📋 Danh sách bài thi</b>"))
+        left_layout.addWidget(self.table, 2)
+        left_layout.addWidget(btn_load)
+        left_layout.addWidget(QLabel("<b>📊 Phổ điểm</b>"))
+        left_layout.addWidget(self.canvas, 1)
+        
+        # --- CỘT PHẢI: AI PHÂN TÍCH ---
+        right_layout = QVBoxLayout()
+        group_ai = QGroupBox("🤖 Trợ lý AI Phân Tích & Gợi ý")
+        ai_inner = QVBoxLayout(group_ai)
+        
+        self.lbl_status = QLabel("Chọn học sinh để xem chi tiết...")
+        self.lbl_status.setStyleSheet("color: #d35400; font-weight: bold;")
+        
+        self.txt_feedback = QTextEdit()
+        self.txt_feedback.setPlaceholderText("AI sẽ phân tích lỗ hổng kiến thức tại đây...")
+        self.txt_feedback.setReadOnly(True)
+        
+        self.btn_ai = QPushButton("✨ Phân tích lỗi sai với AI")
+        self.btn_ai.setStyleSheet("background-color: #8e44ad; color: white; font-weight: bold; padding: 8px;")
+        self.btn_ai.setEnabled(False)
+        self.btn_ai.clicked.connect(self.run_ai)
+        
+        ai_inner.addWidget(self.lbl_status)
+        ai_inner.addWidget(self.txt_feedback)
+        ai_inner.addWidget(self.btn_ai)
+        
+        right_layout.addWidget(group_ai)
+        
+        main_layout.addLayout(left_layout, 4)
+        main_layout.addLayout(right_layout, 6)
+        
+        self.load_data()
+
+    def load_data(self):
+        try:
+            conn = sqlite3.connect(self.db_path)
+            cur = conn.cursor()
+            cur.execute("SELECT id, student_name, score, timestamp, detail_json, ai_feedback FROM exam_results ORDER BY id DESC LIMIT 100")
+            self.rows = cur.fetchall()
+            conn.close()
+            
+            self.table.setRowCount(0)
+            scores = []
+            for r in self.rows:
+                idx = self.table.rowCount()
+                self.table.insertRow(idx)
+                self.table.setItem(idx, 0, QTableWidgetItem(str(r[1])))
+                self.table.setItem(idx, 1, QTableWidgetItem(str(r[2])))
+                self.table.setItem(idx, 2, QTableWidgetItem(str(r[3])))
+                self.table.setItem(idx, 3, QTableWidgetItem(str(r[0])))
+                scores.append(r[2])
+            
+            # Vẽ biểu đồ
+            self.figure.clear()
+            ax = self.figure.add_subplot(111)
+            if scores:
+                ax.hist(scores, bins=[0,2,4,6,8,10], rwidth=0.9, color='#3498db')
+                ax.set_title(f"Trung bình: {sum(scores)/len(scores):.1f} điểm")
+            self.canvas.draw()
+            
+        except Exception as e:
+            print(f"Load error: {e}")
+
+    def on_row_click(self, row, col):
+        id_item = self.table.item(row, 3)
+        if not id_item: return
+        self.current_id = int(id_item.text())
+        
+        # Tìm data trong cache
+        record = next((r for r in self.rows if r[0] == self.current_id), None)
+        if record:
+            self.lbl_status.setText(f"Đang xem: {record[1]} ({record[2]} điểm)")
+            self.btn_ai.setEnabled(True)
+            self.current_json = record[4]
+            # Nếu có feedback cũ thì hiện luôn
+            if record[5]: self.txt_feedback.setText(record[5])
+            else: self.txt_feedback.clear()
+
+    def run_ai(self):
+        self.btn_ai.setEnabled(False)
+        self.btn_ai.setText("⏳ Đang phân tích...")
+        
+        # Chạy luồng riêng
+        t = threading.Thread(target=self._ai_worker)
+        t.daemon = True
+        t.start()
+
+    def _ai_worker(self):
+        try:
+            details = json.loads(self.current_json)
+            wrong = [d for d in details if not d['is_correct']]
+            
+            if not wrong:
+                msg = "Học sinh làm đúng 100%. Không có lỗi sai!"
+            else:
+                prompt = f"Học sinh làm sai các câu sau: {json.dumps(wrong, ensure_ascii=False)}. Hãy phân tích lỗ hổng kiến thức và đưa ra lời khuyên ôn tập ngắn gọn."
+                # Gọi engine AI của bạn
+                if hasattr(self.ai_engine, 'generate_content'):
+                    msg = self.ai_engine.generate_content(prompt).text
+                else:
+                    msg = "Lỗi: Không tìm thấy AI Engine."
+            
+            # Update DB
+            conn = sqlite3.connect(self.db_path)
+            conn.execute("UPDATE exam_results SET ai_feedback = ? WHERE id = ?", (msg, self.current_id))
+            conn.commit()
+            conn.close()
+            
+            # Update UI (Hack nhẹ để update từ thread)
+            self.txt_feedback.setText(msg)
+            self.btn_ai.setText("✨ Phân tích xong")
+            self.btn_ai.setEnabled(True)
+            
+        except Exception as e:
+            self.txt_feedback.setText(f"Lỗi: {e}")
+            self.btn_ai.setEnabled(True)
+# ----------------------------------------------
 # =============================================================================
 # AI CLONER - ĐÃ TÁCH RA KHỎI MAINAPP
 # =============================================================================
@@ -9568,11 +10113,59 @@ class APIKeyDialog(QDialog):
 # =============================================================================
 # MAIN ENTRY POINT
 # =============================================================================
+# --- [SỬA LẠI HÀM NÀY Ở CUỐI FILE ngan_hang.py] ---
+def check_and_fix_db():
+    print("🛠 Đang kiểm tra cấu trúc Database...")
+    try:
+        conn = sqlite3.connect(DB_PATH)
+        cursor = conn.cursor()
+        
+        # 1. Tạo bảng nếu chưa có (Giữ nguyên DEFAULT CURRENT_TIMESTAMP cho bảng MỚI)
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS exam_results (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                student_name TEXT,
+                student_email TEXT,
+                exam_id TEXT,
+                score REAL,
+                detail_json TEXT,
+                ai_feedback TEXT,
+                timestamp TEXT
+            )
+        ''')
+
+        # 2. Kiểm tra các cột thiếu (Sửa lỗi non-constant default)
+        cursor.execute("PRAGMA table_info(exam_results)")
+        columns = [info[1] for info in cursor.fetchall()]
+        
+        # Sửa lỗi timestamp: Thêm cột TEXT bình thường, sau đó Update dữ liệu
+        if 'timestamp' not in columns:
+            print("⚠️ Thiếu cột 'timestamp'. Đang thêm thủ công...")
+            # Bước 1: Thêm cột không có default dynamic
+            cursor.execute("ALTER TABLE exam_results ADD COLUMN timestamp TEXT")
+            conn.commit()
+            # Bước 2: Điền thời gian hiện tại vào các dòng cũ đang bị NULL
+            cursor.execute("UPDATE exam_results SET timestamp = datetime('now', 'localtime') WHERE timestamp IS NULL")
+            conn.commit()
+            print("✅ Đã thêm cột timestamp thành công.")
+            
+        if 'ai_feedback' not in columns:
+            print("⚠️ Thiếu cột 'ai_feedback'. Đang thêm...")
+            cursor.execute("ALTER TABLE exam_results ADD COLUMN ai_feedback TEXT")
+            conn.commit()
+            
+        conn.close()
+    except Exception as e:
+        print(f"❌ Lỗi kiểm tra DB: {e}")
+
 if __name__ == "__main__":
+    check_and_fix_db()
+    create_results_table(DB_PATH)
+
     import sys
     import platform
     from PyQt6.QtGui import QFont
-    
+
     # 1. Cấu hình High DPI (Màn hình độ phân giải cao/Retina)
     if hasattr(Qt.ApplicationAttribute, 'AA_EnableHighDpiScaling'):
         QApplication.setAttribute(Qt.ApplicationAttribute.AA_EnableHighDpiScaling, True)
