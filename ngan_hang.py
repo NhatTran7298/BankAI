@@ -7469,7 +7469,9 @@ class DashboardWidget(QWidget):
         self.load_data()
 
     def init_ui(self):
-        from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
+        import matplotlib
+        matplotlib.use('QtAgg')
+        from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg as FigureCanvas
         from matplotlib.figure import Figure
         layout = QVBoxLayout()
         
@@ -7564,7 +7566,9 @@ class QuestionEditorDialog(QDialog):
             self.load_data(data)
 
     def init_ui(self):
-        from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
+        import matplotlib
+        matplotlib.use('QtAgg')
+        from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg as FigureCanvas
         from matplotlib.figure import Figure
         main_layout = QVBoxLayout()
         
@@ -10341,7 +10345,9 @@ class AnalysisTab(QWidget):
         self.init_ui()
 
     def init_ui(self):
-        from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
+        import matplotlib
+        matplotlib.use('QtAgg')
+        from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg as FigureCanvas
         from matplotlib.figure import Figure
         main_layout = QHBoxLayout(self)
         
