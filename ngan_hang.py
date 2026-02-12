@@ -7469,6 +7469,8 @@ class DashboardWidget(QWidget):
         self.load_data()
 
     def init_ui(self):
+        from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
+        from matplotlib.figure import Figure
         layout = QVBoxLayout()
         
         # Tiêu đề
@@ -7562,6 +7564,8 @@ class QuestionEditorDialog(QDialog):
             self.load_data(data)
 
     def init_ui(self):
+        from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
+        from matplotlib.figure import Figure
         main_layout = QVBoxLayout()
         
         # --- 1. KHU VỰC CẤU HÌNH (GIỮ NGUYÊN) ---
@@ -10325,8 +10329,6 @@ class AnalysisTab(QWidget):
     ai_error = pyqtSignal(str)
 
     def __init__(self, db_path, ai_engine):
-        from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
-        from matplotlib.figure import Figure
         super().__init__()
         self.db_path = db_path
         self.ai_engine = ai_engine
@@ -10339,6 +10341,8 @@ class AnalysisTab(QWidget):
         self.init_ui()
 
     def init_ui(self):
+        from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
+        from matplotlib.figure import Figure
         main_layout = QHBoxLayout(self)
         
         # --- CỘT TRÁI: DANH SÁCH & BIỂU ĐỒ ---
