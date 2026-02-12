@@ -1,13 +1,17 @@
 # Thêm đoạn này vào ngay sau các dòng import os, sys
 import os
 import sys
+import io
+from PIL import Image
 
 # --- CHÈN THÊM VÀO ĐẦU FILE (Sau các import khác) ---
 import pickle
 from google_auth_oauthlib.flow import InstalledAppFlow
 from google.auth.transport.requests import Request
 from googleapiclient.discovery import build
-
+from PyQt6.QtWebEngineWidgets import QWebEngineView # Cần cho Live Preview
+from PyQt6.QtGui import QAction, QPalette, QColor
+# Nếu chưa cài WebEngine, hãy chạy lệnh: pip install PyQt6-WebEngine
 # Các quyền cần thiết: Đọc khóa học, đọc danh sách học sinh, chấm điểm
 SCOPES = [
     'https://www.googleapis.com/auth/classroom.courses.readonly',
@@ -830,6 +834,16 @@ class AIEngine:
         except Exception as e:
             print(f"❌ AI Init Error: {e}")
             self.is_ready = False
+
+    def analyze_image(self, pil_image, prompt):
+        """Gửi ảnh và câu lệnh lên Gemini để xử lý"""
+        try:
+            # Gemini 1.5 Flash/Pro nhận trực tiếp list [prompt, image]
+            response = self.model.generate_content([prompt, pil_image])
+            return response.text.strip()
+        except Exception as e:
+            print(f"Lỗi Vision AI: {e}")
+            return None
 
     def _force_structure(self, ai_text, original_tex):
         ai_text = ai_text.replace("\\begin{question}", "").replace("\\end{question}", "")
@@ -3495,6 +3509,10 @@ class ClassroomDialog(QDialog):
         
         # Auto login
         from PyQt6.QtCore import QTimer
+        try:
+            from PyQt6.QtWebEngineWidgets import QWebEngineView
+        except ImportError:
+            pass # Sẽ được xử lý try-except bên dưới
         QTimer.singleShot(100, self.init_google) 
 
     def init_google(self):
@@ -5283,7 +5301,6 @@ class ConnectionManager:
 manager = ConnectionManager()
 
 # --- ĐẢM BẢO ĐÃ IMPORT CÁC THƯ VIỆN NÀY Ở ĐẦU FILE ---
-from pyngrok import ngrok, conf
 import uvicorn
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.responses import HTMLResponse, FileResponse
@@ -5307,6 +5324,7 @@ class WebServerThread(QThread):
         self.ip_address = "0.0.0.0" 
         self.gg_sync = None 
         self.tunnel_process = None
+        self.app = None
         
         # Thư mục chứa các file đề thi riêng biệt
         self.exam_dir = os.path.join(os.path.expanduser("~"), ".bankai_exams")
@@ -5492,28 +5510,7 @@ class WebServerThread(QThread):
         except Exception as e: print(f"❌ Lỗi Sync: {e}")
 
     def run(self):
-        # 1. DIỆT SẠCH TIẾN TRÌNH NGROK CŨ
-        try:
-            print("🔄 Đang dọn dẹp các kết nối cũ...")
-            from pyngrok import ngrok
-            ngrok.kill()
-            
-            # [Fix] Force kill process nếu ngrok.kill() không sạch (Tránh lỗi ERR_NGROK_334)
-            if sys.platform != "win32":
-                os.system("pkill -9 ngrok")
-            
-            import time
-            time.sleep(2)
-        except:
-            pass
-
-        # 2. CẤU HÌNH TOKEN (ĐOẠN ĐÃ SỬA)
-        # Bắt buộc nạp token để tránh lỗi ERR_NGROK_4018
-        if self.ngrok_auth_token:
-            conf.get_default().auth_token = self.ngrok_auth_token
-            # Đặt vùng là US (Mỹ) hoặc AP (Châu Á) tùy chọn
-            conf.get_default().region = "us" 
-        
+        # 1. Cấu hình FastAPI
         app = FastAPI()
         app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_credentials=True, allow_methods=["*"], allow_headers=["*"])
 
@@ -5528,34 +5525,35 @@ class WebServerThread(QThread):
                 # 1. Khởi tạo danh sách học sinh
                 final_students = []
             
-            # 2. Cố gắng lấy danh sách từ Database (Do Classroom đồng bộ về)
-            try:
-                # DB_PATH là biến toàn cục chứa đường dẫn file .db của bạn
-                conn = sqlite3.connect(DB_PATH)
-                cursor = conn.cursor()
-                # Lấy tên và email từ bảng students
-                cursor.execute("SELECT name, email FROM students")
-                rows = cursor.fetchall()
-                conn.close()
+                # 2. Cố gắng lấy danh sách từ Database (Do Classroom đồng bộ về)
+                try:
+                    # DB_PATH là biến toàn cục chứa đường dẫn file .db của bạn
+                    conn = sqlite3.connect(DB_PATH)
+                    cursor = conn.cursor()
+                    # Lấy tên và email từ bảng students
+                    cursor.execute("SELECT name, email FROM students")
+                    rows = cursor.fetchall()
+                    conn.close()
+                    
+                    if rows:
+                        for r_name, r_email in rows:
+                            final_students.append({"name": r_name, "email": r_email})
+                        print(f"Server: Đã load {len(final_students)} học sinh từ Database.")
+                except Exception as e:
+                    print(f"Server: Không đọc được DB Students ({e}). Dùng danh sách từ file đề.")
+
+                # 3. Fallback: Nếu DB rỗng (chưa đồng bộ), dùng lại danh sách cũ trong file đề
+                if not final_students:
+                    final_students = data.get('students', [])
+
+                # 4. Chuyển đổi sang JSON để chèn vào HTML
+                # ensure_ascii=False để giữ tiếng Việt không bị lỗi font
+                json_students = json.dumps(final_students, ensure_ascii=False).replace("</script>", "<\\/script>")
                 
-                if rows:
-                    for r_name, r_email in rows:
-                        final_students.append({"name": r_name, "email": r_email})
-                    print(f"Server: Đã load {len(final_students)} học sinh từ Database.")
-            except Exception as e:
-                print(f"Server: Không đọc được DB Students ({e}). Dùng danh sách từ file đề.")
-
-            # 3. Fallback: Nếu DB rỗng (chưa đồng bộ), dùng lại danh sách cũ trong file đề
-            if not final_students:
-                final_students = data.get('students', [])
-
-            # 4. Chuyển đổi sang JSON để chèn vào HTML
-            # ensure_ascii=False để giữ tiếng Việt không bị lỗi font
-            json_students = json.dumps(final_students, ensure_ascii=False).replace("</script>", "<\\/script>")
+                # 5. Thay thế placeholder trong HTML
+                html_content = WEB_UI_TEMPLATE.replace("__STUDENT_LIST__", json_students)
+                return HTMLResponse(content=html_content)
             
-            # 5. Thay thế placeholder trong HTML
-            html_content = WEB_UI_TEMPLATE.replace("__STUDENT_LIST__", json_students)
-            return HTMLResponse(content=html)
             return HTMLResponse(content="<h1>❌ Đề thi không tồn tại hoặc đã bị xóa!</h1>")
 
         @app.get("/api/pdf/{filename}")
@@ -5641,6 +5639,7 @@ class WebServerThread(QThread):
                                         
                                         prompt = f"Học sinh làm sai các câu sau: {json.dumps(minimized_wrong, ensure_ascii=False)}. Hãy phân tích ngắn gọn lỗi sai (dựa vào lời giải) và đưa ra lời khuyên ôn tập (tối đa 150 từ)."
                                         # Use to_thread to avoid blocking event loop
+                                        import asyncio
                                         response = await asyncio.to_thread(self.ai_engine.model.generate_content, prompt)
                                         ai_feedback = response.text
                                     else:
@@ -5682,15 +5681,28 @@ class WebServerThread(QThread):
 
     def start_cloudflare_tunnel(self):
         """Khởi động Cloudflare Tunnel và lấy URL"""
-        if not shutil.which("cloudflared"):
-            self.server_ready.emit("Lỗi: Chưa cài đặt cloudflared! Vui lòng cài đặt và thêm vào PATH.")
+        import shutil
+        import subprocess
+        
+        # Tìm binary
+        binary_name = "cloudflared.exe" if sys.platform == "win32" else "cloudflared"
+        binary_path = shutil.which(binary_name)
+        
+        # Nếu không tìm thấy trong PATH, thử tìm ở thư mục hiện tại
+        if not binary_path:
+            local_path = os.path.join(os.getcwd(), binary_name)
+            if os.path.exists(local_path):
+                binary_path = local_path
+        
+        if not binary_path:
+            self.server_ready.emit("Lỗi: Chưa cài đặt cloudflared! Vui lòng tải và thêm vào PATH.")
             return
 
         try:
             # Chạy cloudflared tunnel
             # Lưu ý: cloudflared in URL ra stderr
             self.tunnel_process = subprocess.Popen(
-                ["cloudflared", "tunnel", "--url", f"http://localhost:{self.port}"],
+                [binary_path, "tunnel", "--url", f"http://localhost:{self.port}"],
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
                 text=True,
@@ -5713,16 +5725,14 @@ class WebServerThread(QThread):
             if not line:
                 break
             
-            print(f"[Cloudflare] {line.strip()}") # Debug log
-            
             # Tìm dòng chứa URL .trycloudflare.com
+            # Regex: https://[random].trycloudflare.com
             if ".trycloudflare.com" in line and not found:
                 match = re.search(r'https://[a-zA-Z0-9-]+\.trycloudflare\.com', line)
                 if match:
                     self.public_url = match.group(0)
                     self.server_ready.emit(self.public_url)
                     found = True
-                    # Không break, tiếp tục đọc để giữ pipe không bị đầy
         
         if not found and self.tunnel_process:
              self.server_ready.emit("Không tìm thấy URL Cloudflare. Kiểm tra log.")
@@ -5735,7 +5745,6 @@ class WebServerThread(QThread):
         if self.tunnel_process:
             try:
                 self.tunnel_process.terminate()
-                # self.tunnel_process.wait(timeout=2)
             except: pass
             self.tunnel_process = None
 
@@ -5746,6 +5755,7 @@ class WebServerThread(QThread):
         # Đợi tối đa 3 giây để luồng kết thúc, nếu không thì ép tắt
         if not self.wait(3000):
             self.terminate()
+
 # =============================================================================
 #  MODULE GOOGLE CLASSROOM & PDF (THÊM MỚI VÀO ĐÂY)
 # =============================================================================
@@ -7449,6 +7459,349 @@ def create_results_table(db_path):
     except Exception as e:
         print(f"❌ Lỗi tạo bảng exam_results: {e}")
 # ---------------------------------------------
+
+class DashboardWidget(QWidget):
+    """Widget hiển thị thống kê ngân hàng câu hỏi"""
+    def __init__(self, db_path):
+        super().__init__()
+        self.db_path = db_path
+        self.init_ui()
+        self.load_data()
+
+    def init_ui(self):
+        layout = QVBoxLayout()
+        
+        # Tiêu đề
+        title = QLabel("TỔNG QUAN NGÂN HÀNG CÂU HỎI")
+        title.setStyleSheet("font-size: 24px; font-weight: bold; color: #2980b9; margin-bottom: 20px;")
+        title.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        layout.addWidget(title)
+
+        # Khu vực hiển thị các thẻ thống kê
+        cards_layout = QGridLayout()
+        
+        self.card_total = self.create_card("Tổng số câu", "0", "#e74c3c")
+        self.card_10 = self.create_card("Lớp 10", "0", "#f39c12")
+        self.card_11 = self.create_card("Lớp 11", "0", "#27ae60")
+        self.card_12 = self.create_card("Lớp 12", "0", "#8e44ad")
+
+        cards_layout.addWidget(self.card_total, 0, 0)
+        cards_layout.addWidget(self.card_10, 0, 1)
+        cards_layout.addWidget(self.card_11, 0, 2)
+        cards_layout.addWidget(self.card_12, 0, 3)
+        
+        layout.addLayout(cards_layout)
+        
+        # Thêm khoảng trống giãn dòng
+        layout.addStretch()
+        self.setLayout(layout)
+
+    def create_card(self, title_text, value_text, color):
+        frame = QFrame()
+        frame.setStyleSheet(f"""
+            QFrame {{
+                background-color: white;
+                border-radius: 10px;
+                border-left: 5px solid {color};
+                border-bottom: 2px solid #ddd;
+            }}
+        """)
+        l = QVBoxLayout()
+        
+        lbl_title = QLabel(title_text)
+        lbl_title.setStyleSheet("color: #7f8c8d; font-size: 14px;")
+        
+        lbl_value = QLabel(value_text)
+        lbl_value.setStyleSheet(f"color: {color}; font-size: 32px; font-weight: bold;")
+        lbl_value.setObjectName("value") # Đánh dấu để update sau này
+        
+        l.addWidget(lbl_title)
+        l.addWidget(lbl_value)
+        frame.setLayout(l)
+        return frame
+
+    def load_data(self):
+        try:
+            conn = sqlite3.connect(self.db_path)
+            cursor = conn.cursor()
+            
+            # Tổng số
+            cursor.execute("SELECT COUNT(*) FROM questions")
+            total = cursor.fetchone()[0]
+            
+            # Theo lớp
+            cursor.execute("SELECT grade, COUNT(*) FROM questions GROUP BY grade")
+            grades = dict(cursor.fetchall())
+            
+            conn.close()
+            
+            # Cập nhật UI
+            self.update_card(self.card_total, total)
+            self.update_card(self.card_10, grades.get(10, 0))
+            self.update_card(self.card_11, grades.get(11, 0))
+            self.update_card(self.card_12, grades.get(12, 0))
+            
+        except Exception as e:
+            print(f"Lỗi load dashboard: {e}")
+
+    def update_card(self, card, value):
+        lbl = card.findChild(QLabel, "value")
+        if lbl: lbl.setText(str(value))
+
+class QuestionEditorDialog(QDialog):
+    """Hộp thoại Thêm/Sửa câu hỏi (Tích hợp OCR AI)"""
+    def __init__(self, data=None, parent=None):
+        super().__init__(parent)
+        self.data = data
+        self.setWindowTitle("Biên soạn Câu hỏi" if data is None else "Chỉnh sửa Câu hỏi")
+        self.resize(900, 700)
+        self.init_ui()
+        
+        # Nếu là chế độ Sửa, điền dữ liệu cũ vào
+        if data:
+            self.load_data(data)
+
+    def init_ui(self):
+        main_layout = QVBoxLayout()
+        
+        # --- 1. KHU VỰC CẤU HÌNH (GIỮ NGUYÊN) ---
+        form_layout = QFormLayout()
+        
+        # Hàng 1: Lớp & Môn
+        h1 = QHBoxLayout()
+        self.cb_grade = QComboBox(); self.cb_grade.addItems(["10", "11", "12"])
+        self.cb_subject = QComboBox(); self.cb_subject.addItems(["Toán", "Lý", "Hóa", "Sinh", "Anh"])
+        h1.addWidget(QLabel("Lớp:")); h1.addWidget(self.cb_grade)
+        h1.addWidget(QLabel("Môn:")); h1.addWidget(self.cb_subject)
+        form_layout.addRow(h1)
+        
+        # Hàng 2: Chương & Bài
+        h2 = QHBoxLayout()
+        self.sb_chapter = QSpinBox(); self.sb_chapter.setRange(1, 20)
+        self.sb_bai = QSpinBox(); self.sb_bai.setRange(1, 50)
+        h2.addWidget(QLabel("Chương:")); h2.addWidget(self.sb_chapter)
+        h2.addWidget(QLabel("Bài:")); h2.addWidget(self.sb_bai)
+        form_layout.addRow(h2)
+
+        # Hàng 3: Mức độ & Dạng
+        h3 = QHBoxLayout()
+        self.cb_level = QComboBox(); self.cb_level.addItems(["NB", "TH", "VD", "VDC"])
+        self.cb_dang = QComboBox()
+        self.cb_dang.addItem("Trắc nghiệm", 1)
+        self.cb_dang.addItem("Đúng/Sai", 2)
+        self.cb_dang.addItem("Điền khuyết", 3)
+        self.cb_dang.addItem("Tự luận", 4)
+        h3.addWidget(QLabel("Mức độ:")); h3.addWidget(self.cb_level)
+        h3.addWidget(QLabel("Dạng câu:")); h3.addWidget(self.cb_dang)
+        form_layout.addRow(h3)
+        
+        main_layout.addLayout(form_layout)
+
+        # --- 2. CÔNG CỤ OCR (GIỮ NGUYÊN) ---
+        ocr_toolbar = QHBoxLayout()
+        self.btn_ocr = QPushButton("📷 Paste Ảnh -> LaTeX (AI)")
+        self.btn_ocr.setMinimumHeight(40)
+        self.btn_ocr.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.btn_ocr.setStyleSheet("""
+            QPushButton {
+                background-color: #8e44ad; color: white; font-weight: bold; 
+                border-radius: 5px; padding: 5px; font-size: 14px;
+            }
+            QPushButton:hover { background-color: #5b4cc4; }
+        """)
+        self.btn_ocr.clicked.connect(self.paste_image_ocr)
+        
+        self.lbl_status = QLabel("💡 Mẹo: Chụp màn hình công thức (Win+Shift+S) rồi bấm nút này")
+        self.lbl_status.setStyleSheet("color: #636e72; font-style: italic;")
+        
+        ocr_toolbar.addWidget(self.btn_ocr)
+        ocr_toolbar.addWidget(self.lbl_status)
+        ocr_toolbar.addStretch()
+        main_layout.addLayout(ocr_toolbar)
+    
+        # --- 3. KHU VỰC SOẠN THẢO & REVIEW (CẢI TIẾN MỚI) ---
+        # Sử dụng Splitter chia 2 phần: TRÁI (Nhập liệu) - PHẢI (Xem trước)
+        splitter = QSplitter(Qt.Orientation.Horizontal)
+        
+        # --- CỘT TRÁI: DÙNG TAB ĐỂ CHỨA CẢ ĐỀ BÀI VÀ LỜI GIẢI ---
+        self.input_tabs = QTabWidget()
+        
+        # Tab 1: Nội dung câu hỏi
+        self.txt_content = QTextEdit()
+        self.txt_content.setPlaceholderText("Nhập đề bài (LaTeX) tại đây...")
+        self.txt_content.textChanged.connect(self.update_preview) # Gõ đến đâu hiện đến đó
+        self.input_tabs.addTab(self.txt_content, "📝 Nội dung Câu hỏi")
+        
+        # Tab 2: Lời giải chi tiết
+        self.txt_loigiai = QTextEdit()
+        self.txt_loigiai.setPlaceholderText("Nhập lời giải chi tiết tại đây...")
+        self.txt_loigiai.textChanged.connect(self.update_preview)
+        self.input_tabs.addTab(self.txt_loigiai, "💡 Lời giải")
+        
+        splitter.addWidget(self.input_tabs)
+        
+        # --- CỘT PHẢI: LIVE PREVIEW (WEB ENGINE) ---
+        # Kiểm tra xem đã import QWebEngineView chưa, nếu chưa thì dùng QTextEdit thay thế tạm
+        try:
+            self.preview_view = QWebEngineView()
+            # Cài đặt nền trắng cho đẹp
+            self.preview_view.page().setBackgroundColor(QColor("white"))
+        except NameError:
+            self.preview_view = QTextEdit()
+            self.preview_view.setPlaceholderText("Chưa cài đặt thư viện PyQt6-WebEngine.\nVui lòng chạy: pip install PyQt6-WebEngine")
+            self.preview_view.setReadOnly(True)
+
+        # Group box bọc ngoài Preview cho đẹp
+        preview_group = QGroupBox("Xem trước (Live Preview)")
+        preview_layout = QVBoxLayout()
+        preview_layout.addWidget(self.preview_view)
+        preview_group.setLayout(preview_layout)
+        
+        splitter.addWidget(preview_group)
+        
+        # Tỷ lệ màn hình: 1 phần nhập - 1 phần xem
+        splitter.setSizes([450, 450])
+        
+        main_layout.addWidget(splitter, 1)
+
+        # --- 4. CÁC NÚT LỆNH CUỐI ---
+        btn_box = QHBoxLayout()
+        btn_save = QPushButton("Lưu câu hỏi"); btn_save.clicked.connect(self.accept)
+        btn_cancel = QPushButton("Hủy bỏ"); btn_cancel.clicked.connect(self.reject)
+        
+        btn_save.setStyleSheet("background-color: #00b894; color: white; font-weight: bold; padding: 10px;")
+        
+        btn_box.addStretch()
+        btn_box.addWidget(btn_cancel)
+        btn_box.addWidget(btn_save)
+        main_layout.addLayout(btn_box)
+
+        self.setLayout(main_layout)
+        
+        # Cập nhật preview lần đầu (nếu là sửa câu hỏi)
+        QTimer.singleShot(500, self.update_preview)
+
+    # --- BỔ SUNG HÀM CẬP NHẬT LIVE PREVIEW ---
+    def update_preview(self):
+        """Hàm render LaTeX thời gian thực"""
+        # Kiểm tra đang ở tab nào để hiển thị nội dung đó
+        current_idx = self.input_tabs.currentIndex()
+        if current_idx == 0:
+            latex = self.txt_content.toPlainText()
+            title = "Nội dung câu hỏi"
+        else:
+            latex = self.txt_loigiai.toPlainText()
+            title = "Lời giải chi tiết"
+
+        # Template HTML chứa MathJax để render
+        html_content = f"""
+        <html>
+        <head>
+            <script src="https://polyfill.io/v3/polyfill.min.js?features=es6"></script>
+            <script id="MathJax-script" async src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-mml-chtml.js"></script>
+            <script>
+                window.MathJax = {{
+                    tex: {{ inlineMath: [['$', '$'], ['\\\\(', '\\\\)']] }},
+                    svg: {{ fontCache: 'global' }}
+                }};
+            </script>
+            <style>
+                body {{ font-family: 'Segoe UI', sans-serif; padding: 20px; font-size: 16px; color: #333; }}
+                h3 {{ color: #2980b9; border-bottom: 2px solid #eee; padding-bottom: 10px; }}
+                .math-container {{ margin-top: 20px; line-height: 1.6; }}
+            </style>
+        </head>
+        <body>
+            <h3>{title}</h3>
+            <div class="math-container">
+                {latex}
+            </div>
+        </body>
+        </html>
+        """
+        
+        if hasattr(self, 'preview_view') and isinstance(self.preview_view, QWebEngineView):
+            self.preview_view.setHtml(html_content)
+
+    def load_data(self, d):
+        """Điền dữ liệu cũ khi sửa"""
+        self.txt_content.setPlainText(d['content_tex'])
+        self.txt_loigiai.setPlainText(d['loigiai_tex'] if d['loigiai_tex'] else "")
+        self.cb_grade.setCurrentText(str(d['grade']))
+        self.cb_subject.setCurrentText(str(d['subject']))
+        self.sb_chapter.setValue(d['chapter'])
+        self.sb_bai.setValue(d['bai'])
+        self.cb_level.setCurrentText(d['level'])
+        idx = self.cb_dang.findData(d['dang'])
+        if idx >= 0: self.cb_dang.setCurrentIndex(idx)
+
+    def get_data(self):
+        """Lấy dữ liệu từ form ra ngoài"""
+        return {
+            'content': self.txt_content.toPlainText(),
+            'loigiai': self.txt_loigiai.toPlainText(),
+            'grade': int(self.cb_grade.currentText()),
+            'subject': self.cb_subject.currentText(),
+            'chapter': self.sb_chapter.value(),
+            'bai': self.sb_bai.value(),
+            'level': self.cb_level.currentText(),
+            'dang': self.cb_dang.currentData(),
+            'image': "" # Tạm thời chưa xử lý lưu file ảnh riêng
+        }
+
+    def paste_image_ocr(self):
+        """Hàm xử lý OCR AI thần thánh"""
+        clipboard = QApplication.clipboard()
+        mime_data = clipboard.mimeData()
+
+        if mime_data.hasImage():
+            # 1. Lấy ảnh
+            qimage = mime_data.imageData()
+            
+            # 2. Convert sang PIL
+            buffer = QBuffer()
+            buffer.open(QBuffer.OpenModeFlag.ReadWrite)
+            qimage.save(buffer, "PNG")
+            pil_image = Image.open(io.BytesIO(buffer.data()))
+            
+            # 3. UI Feedback
+            self.btn_ocr.setText("⏳ AI đang đọc ảnh... vui lòng chờ")
+            self.btn_ocr.setEnabled(False)
+            QApplication.processEvents()
+            
+            try:
+                # 4. Tìm AI Engine (thường nằm ở MainApp cha)
+                # Ta duyệt ngược lên để tìm cửa sổ chính có biến 'ai'
+                parent = self.parent()
+                ai_engine = None
+                
+                # Thử tìm biến ai trong parent (MainApp)
+                if hasattr(parent, 'ai'):
+                    ai_engine = parent.ai
+                # Nếu dialog này được gọi với parent=None, ta phải dùng cách khác
+                # Tuy nhiên ở hàm add_question của MainApp ta nên gọi QuestionEditorDialog(None, self)
+                
+                if ai_engine:
+                    prompt = "Chuyển ảnh công thức Toán này sang LaTeX chuẩn. Chỉ trả về mã LaTeX, không giải thích. Hệ phương trình dùng \\heva, ngoặc vuông dùng \\hoac."
+                    res = ai_engine.analyze_image(pil_image, prompt)
+                    
+                    if res:
+                        clean_tex = res.replace("```latex", "").replace("```", "").strip()
+                        self.txt_content.insertPlainText(clean_tex + "\n")
+                        self.lbl_status.setText("✅ Đã chèn LaTeX thành công!")
+                    else:
+                        QMessageBox.warning(self, "Lỗi", "AI không trả về kết quả nào.")
+                else:
+                    QMessageBox.critical(self, "Lỗi code", "Không tìm thấy kết nối AI (biến self.ai trong MainApp).")
+                    
+            except Exception as e:
+                QMessageBox.critical(self, "Lỗi", f"Có lỗi khi gọi AI: {e}")
+            
+            # 5. Reset nút
+            self.btn_ocr.setText("📷 Paste Ảnh -> LaTeX (AI)")
+            self.btn_ocr.setEnabled(True)
+        else:
+            QMessageBox.warning(self, "Không có ảnh", "Vui lòng chụp màn hình (Copy) trước khi bấm nút này!")
 
 class MainApp(QMainWindow):
     def apply_theme(self):
@@ -9648,11 +10001,9 @@ class MainApp(QMainWindow):
         return questions, source
     
     # --- CẬP NHẬT HÀM on_student_submit TRONG MainApp ---
-    def on_student_submit(self, data):
+    def on_student_submit(self, name, score):
         """Xử lý khi học sinh nộp bài"""
-        # data thường có dạng: {'name': 'Nguyen Van A', 'score': 8.5, 'detail': ...}
-        name = data.get('name', 'Unknown')
-        score = float(data.get('score', 0))
+        # [FIXED] Nhận trực tiếp name (str) và score (float) từ signal result_received
         
         # 1. Logic cũ: Hiển thị thông báo/Cập nhật bảng điểm
         msg = f"📩 {name} vừa nộp bài! Điểm: {score}"
@@ -9665,14 +10016,13 @@ class MainApp(QMainWindow):
             # Tìm email của học sinh này (vì Classroom cần Email, nhưng Web trả về Tên)
             student_email = None
             
-            # Cách 1: Nếu Web trả về email (Tốt nhất)
-            if 'email' in data and data['email']:
-                student_email = data['email']
-            
+            # [FIXED] Bỏ qua cách tìm email từ data (vì không còn data dict)
             # Cách 2: Tìm trong danh sách lớp đang load (Fallback)
-            elif self.current_students:
+            if self.current_students:
                 for s in self.current_students:
-                    if s['name'] == name:
+                    # name ở đây có thể là "Ten HS - Ten De Thi" do server emit
+                    # nên ta dùng 'in' để tìm tên HS trong chuỗi đó
+                    if s['name'] in name: 
                         student_email = s['email']
                         break
             
@@ -9693,11 +10043,8 @@ class MainApp(QMainWindow):
                         
                 threading.Thread(target=run_sync, daemon=True).start()
             else:
-                print(f"⚠️ Không tìm thấy Email cho học sinh {name}, bỏ qua đồng bộ.")
-    # -----------------------------------------------------
+                print(f"⚠️ Không tìm thấy Email cho học sinh trong chuỗi '{name}', bỏ qua đồng bộ.")
 
-# --- CHÈN VÀO CUỐI CLASS MAINAPP ---
-    
     def load_classroom_courses(self):
         try:
             courses = self.gc_manager.get_courses()
@@ -9749,6 +10096,145 @@ class MainApp(QMainWindow):
                 self.cb_assignments.addItem(a['title'], userData=a['id'])
         except Exception as e: pass
     # -----------------------------------
+
+    # --- 1. HÀM THÊM CÂU HỎI (Đã tích hợp gọi Dialog OCR) ---
+    def add_question(self):
+        """Thêm câu hỏi mới"""
+        # Truyền self vào tham số thứ 2 để Dialog có thể dùng AI của MainApp
+        dialog = QuestionEditorDialog(None, self) 
+        if dialog.exec():
+            data = dialog.get_data()
+            try:
+                conn = sqlite3.connect(self.db_path)
+                cursor = conn.cursor()
+                cursor.execute("""
+                    INSERT INTO questions (content_tex, grade, subject, chapter, bai, level, dang, image_path, loigiai_tex)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """, (
+                    data['content'], data['grade'], data['subject'], 
+                    data['chapter'], data['bai'], data['level'], 
+                    data['dang'], data['image'], data['loigiai']
+                ))
+                conn.commit()
+                conn.close()
+                
+                # Gọi hàm tải lại bảng (nếu có)
+                if hasattr(self, 'filter_questions'):
+                    self.filter_questions()
+                
+                if hasattr(self, 'status_bar'):
+                    self.status_bar.showMessage("✅ Đã thêm câu hỏi mới", 3000)
+            except Exception as e:
+                QMessageBox.critical(self, "Lỗi", f"Không thể lưu: {e}")
+
+    # --- 2. HÀM SỬA CÂU HỎI ---
+    def edit_question(self):
+        """Sửa câu hỏi đang chọn trên bảng"""
+        # Kiểm tra xem có dòng nào được chọn không
+        if not hasattr(self, 'table') or self.table.currentRow() < 0:
+            return
+        
+        row = self.table.currentRow()
+        try:
+            # Lấy ID từ cột đầu tiên (cột 0)
+            q_id = int(self.table.item(row, 0).text())
+        except:
+            return
+
+        # Lấy dữ liệu cũ từ DB lên để sửa
+        conn = sqlite3.connect(self.db_path)
+        conn.row_factory = sqlite3.Row
+        cursor = conn.cursor()
+        cursor.execute("SELECT * FROM questions WHERE id=?", (q_id,))
+        q_data = cursor.fetchone()
+        conn.close()
+        
+        if not q_data: return
+
+        # Mở Dialog sửa (Truyền self vào để dùng AI)
+        dialog = QuestionEditorDialog(q_data, self)
+        if dialog.exec():
+            new_data = dialog.get_data()
+            try:
+                conn = sqlite3.connect(self.db_path)
+                cursor = conn.cursor()
+                cursor.execute("""
+                    UPDATE questions SET 
+                    content_tex=?, grade=?, subject=?, chapter=?, bai=?, level=?, dang=?, image_path=?, loigiai_tex=?
+                    WHERE id=?
+                """, (
+                    new_data['content'], new_data['grade'], new_data['subject'],
+                    new_data['chapter'], new_data['bai'], new_data['level'],
+                    new_data['dang'], new_data['image'], new_data['loigiai'],
+                    q_id
+                ))
+                conn.commit()
+                conn.close()
+                
+                if hasattr(self, 'filter_questions'):
+                    self.filter_questions()
+                    
+                if hasattr(self, 'status_bar'):
+                    self.status_bar.showMessage(f"✅ Đã cập nhật câu {q_id}", 3000)
+            except Exception as e:
+                QMessageBox.critical(self, "Lỗi", f"Không thể cập nhật: {e}")
+
+    # --- 3. HÀM TẢI DỮ LIỆU (Cần thiết cho 2 hàm trên chạy) ---
+    def filter_questions(self):
+        """Load danh sách câu hỏi từ DB lên bảng"""
+        try:
+            # Lấy tiêu chí lọc (nếu các combobox tồn tại)
+            grade = self.cb_grade.currentData() if hasattr(self, 'cb_grade') else None
+            subject = self.cb_subject.currentData() if hasattr(self, 'cb_subject') else None
+            level = self.cb_level.currentData() if hasattr(self, 'cb_level') else None
+            
+            query = "SELECT * FROM questions WHERE 1=1"
+            params = []
+            
+            if grade:
+                query += " AND grade=?"
+                params.append(grade)
+            if subject:
+                query += " AND subject=?"
+                params.append(subject)
+            if level:
+                query += " AND level=?"
+                params.append(level)
+                
+            query += " ORDER BY id DESC"
+            
+            conn = sqlite3.connect(self.db_path)
+            conn.row_factory = sqlite3.Row
+            cursor = conn.cursor()
+            cursor.execute(query, params)
+            rows = cursor.fetchall()
+            conn.close()
+            
+            if hasattr(self, 'table'):
+                self.table.setRowCount(len(rows))
+                for i, row in enumerate(rows):
+                    self.table.setItem(i, 0, QTableWidgetItem(str(row['id'])))
+                    self.table.setItem(i, 1, QTableWidgetItem(str(row['id6'])))
+                    
+                    # Hiển thị vắn tắt nội dung
+                    content_preview = row['content_tex'][:60] + "..." if len(row['content_tex']) > 60 else row['content_tex']
+                    self.table.setItem(i, 2, QTableWidgetItem(content_preview))
+                    
+                    self.table.setItem(i, 3, QTableWidgetItem(str(row['grade'])))
+                    
+                    dang_map = {1: "Trắc nghiệm", 2: "Đúng/Sai", 3: "Điền khuyết", 4: "Tự luận"}
+                    self.table.setItem(i, 4, QTableWidgetItem(dang_map.get(row['dang'], "Khác")))
+                    self.table.setItem(i, 5, QTableWidgetItem(row['level']))
+                    
+                    has_img = "Có" if row['image_path'] else ""
+                    self.table.setItem(i, 6, QTableWidgetItem(has_img))
+
+            # Cập nhật số liệu Dashboard (nếu có)
+            if hasattr(self, 'dashboard_tab'):
+                self.dashboard_tab.load_data()
+
+        except Exception as e:
+            print(f"Lỗi filter_questions: {e}")
 
     # --- [CHÈN VÀO TRƯỚC CLASS MAINAPP] ---
 from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
