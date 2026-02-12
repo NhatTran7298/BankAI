@@ -327,7 +327,7 @@ from PyQt6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout,
 
 # Tìm dòng from PyQt6.QtGui import ... và thêm QPixmap, QPainter vào
 from PyQt6.QtGui import QDrag, QFont, QIcon, QColor, QAction, QBrush, QPixmap, QPainter, QPen, QCursor
-from PyQt6.QtCore import Qt, QThread, pyqtSignal, QMimeData, QPoint, QSize
+from PyQt6.QtCore import Qt, QThread, pyqtSignal, QMimeData, QPoint, QSize, QBuffer, QByteArray
 # =============================================================================
 # QUẢN LÝ API KEY CÁ NHÂN
 # =============================================================================
@@ -7469,6 +7469,10 @@ class DashboardWidget(QWidget):
         self.load_data()
 
     def init_ui(self):
+        import matplotlib
+        matplotlib.use('QtAgg')
+        from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg as FigureCanvas
+        from matplotlib.figure import Figure
         layout = QVBoxLayout()
         
         # Tiêu đề
@@ -7562,6 +7566,10 @@ class QuestionEditorDialog(QDialog):
             self.load_data(data)
 
     def init_ui(self):
+        import matplotlib
+        matplotlib.use('QtAgg')
+        from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg as FigureCanvas
+        from matplotlib.figure import Figure
         main_layout = QVBoxLayout()
         
         # --- 1. KHU VỰC CẤU HÌNH (GIỮ NGUYÊN) ---
@@ -8069,19 +8077,32 @@ class MainApp(QMainWindow):
         self.ai = AIEngine(api_key)
         self.gc_manager = GoogleClassroomManager()
         self.current_students = []
+        self.current_exam = []
+        self.generated_exams = {}
+        
         # Dọn dẹp cache ngầm
         self.cleanup_worker = CacheCleanupWorker()
         self.cleanup_worker.start()
         
-        self.current_exam = []
-        self.generated_exams = {}
+        self.setup_ui()
+        
+        QTimer.singleShot(100, self.load_stats)
+
+        # --- THÊM TIMER SCHEDULER ---
+        self.scheduler_timer = QTimer(self)
+        self.scheduler_timer.timeout.connect(self.check_scheduled_tasks)
+        self.scheduler_timer.start(60000) # Kiểm tra mỗi 60 giây
+        
+        # Kiểm tra ngay khi mở app (xử lý các job bị lỡ)
+        QTimer.singleShot(5000, self.check_scheduled_tasks)
+
+    def setup_ui(self):
         self.setWindowTitle("BankAI Pro - 2025 Matrix Edition")
         
         # [OPTIMIZATION] Auto-fit screen
         screen = QApplication.primaryScreen().availableGeometry()
         w = int(screen.width() * 0.9)
         h = int(screen.height() * 0.9)
-        # Ensure minimum size but not larger than screen
         w = max(1000, min(w, 1600))
         h = max(700, min(h, 1200))
         
@@ -8116,11 +8137,10 @@ class MainApp(QMainWindow):
         self.stack.addWidget(self.create_matrix_tab()) # Index 2
         self.stack.addWidget(self.create_ai_tab())     # Index 3
         self.stack.addWidget(self.create_classroom_tab()) # Index 4
-        # Chèn vào MainApp.__init__
         
         # Tạo tab Dashboard (Truyền DB_PATH và self.ai vào)
         self.dashboard_tab = AnalysisTab(DB_PATH, self.ai)
-        self.stack.addWidget(self.dashboard_tab) # Index tương ứng là 5 (nếu bạn đã thêm Classroom là 4)
+        self.stack.addWidget(self.dashboard_tab) # Index 5
         
         # Kết nối sự kiện nút bấm
         self.sidebar.btn_dashboard.clicked.connect(lambda: self.stack.setCurrentIndex(5))
@@ -8136,16 +8156,68 @@ class MainApp(QMainWindow):
         # Connect Sidebar Signals
         self.sidebar.btn_group.buttonClicked.connect(self.switch_page)
         self.sidebar.btn_dashboard.setChecked(True) # Default
-        
-        QTimer.singleShot(100, self.load_stats)
 
-        # --- THÊM TIMER SCHEDULER ---
-        self.scheduler_timer = QTimer(self)
-        self.scheduler_timer.timeout.connect(self.check_scheduled_tasks)
-        self.scheduler_timer.start(60000) # Kiểm tra mỗi 60 giây
+    def quick_ocr_add(self):
+        clipboard = QApplication.clipboard()
+        mime_data = clipboard.mimeData()
         
-        # Kiểm tra ngay khi mở app (xử lý các job bị lỡ)
-        QTimer.singleShot(5000, self.check_scheduled_tasks)
+        if not mime_data.hasImage():
+            QMessageBox.warning(self, "Không tìm thấy ảnh", "Vui lòng chụp màn hình (Copy) công thức trước khi bấm nút này!")
+            return
+
+        # Show waiting cursor
+        QApplication.setOverrideCursor(Qt.CursorShape.WaitCursor)
+        self.statusBar().showMessage("Đang nhận diện ảnh bằng AI...", 0)
+        QApplication.processEvents()
+
+        try:
+            # Get Image from Clipboard
+            qimage = mime_data.imageData()
+            buffer = QBuffer()
+            buffer.open(QBuffer.OpenModeFlag.ReadWrite)
+            qimage.save(buffer, "PNG")
+            pil_image = Image.open(io.BytesIO(buffer.data()))
+            
+            # Call AI
+            prompt = "Chuyển ảnh công thức Toán này sang LaTeX chuẩn. Chỉ trả về mã LaTeX, không giải thích. Hệ phương trình dùng \\heva, ngoặc vuông dùng \\hoac."
+            res = self.ai.analyze_image(pil_image, prompt)
+            
+            QApplication.restoreOverrideCursor()
+            self.statusBar().showMessage("Đã xong!", 3000)
+            
+            if res:
+                clean_tex = res.replace("```latex", "").replace("```", "").strip()
+                # Open Dialog with content
+                dlg = QuestionEditorDialog(None, self)
+                dlg.txt_content.setPlainText(clean_tex)
+                dlg.lbl_status.setText("✅ Đã chèn LaTeX từ Clipboard!")
+                
+                if dlg.exec():
+                    data = dlg.get_data()
+                    try:
+                        conn = sqlite3.connect(DB_PATH)
+                        cursor = conn.cursor()
+                        cursor.execute("""
+                            INSERT INTO questions (content_tex, grade, subject, chapter, bai, level, dang, image_path, loigiai_tex)
+                            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        """, (
+                            data['content'], data['grade'], data['subject'], 
+                            data['chapter'], data['bai'], data['level'], 
+                            data['dang'], data['image'], data['loigiai']
+                        ))
+                        conn.commit()
+                        conn.close()
+                        self.filter_questions()
+                        QMessageBox.information(self, "Thành công", "Đã thêm câu hỏi mới!")
+                    except Exception as e:
+                        QMessageBox.critical(self, "Lỗi", f"Không thể lưu: {e}")
+            else:
+                QMessageBox.warning(self, "Lỗi AI", "AI không trả về kết quả nào.")
+                
+        except Exception as e:
+            QApplication.restoreOverrideCursor()
+            self.statusBar().showMessage(f"Lỗi: {str(e)}", 5000)
+            QMessageBox.critical(self, "Lỗi hệ thống", str(e))
 
     def switch_page(self, btn):
         id = self.sidebar.btn_group.id(btn)
@@ -8230,6 +8302,22 @@ class MainApp(QMainWindow):
         
         # --- PHẢI: CÁC NÚT CHỨC NĂNG ---
         
+        
+        
+        # [MỚI] Nút OCR Quick Add
+        btn_ocr = QPushButton("📷 OCR Quick Add")
+        btn_ocr.setCursor(Qt.CursorShape.PointingHandCursor)
+        btn_ocr.setStyleSheet("""
+            QPushButton {
+                background-color: #8e44ad; 
+                border: 1px solid rgba(255, 255, 255, 0.5);
+                color: #ffffff; padding: 8px 15px; border-radius: 6px; font-weight: 700;
+            }
+            QPushButton:hover { background-color: #9b59b6; }
+        """)
+        btn_ocr.clicked.connect(self.quick_ocr_add)
+        layout.addWidget(btn_ocr)
+
         # 1. Nút Bật Web Server (MỚI THÊM)
         self.btn_web = QPushButton("🌍 Bật Thi Online")
         self.btn_web.setCheckable(True) # Chế độ bật/tắt
@@ -10237,8 +10325,6 @@ class MainApp(QMainWindow):
             print(f"Lỗi filter_questions: {e}")
 
     # --- [CHÈN VÀO TRƯỚC CLASS MAINAPP] ---
-from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
-from matplotlib.figure import Figure
 import threading
 
 class AnalysisTab(QWidget):
@@ -10259,6 +10345,10 @@ class AnalysisTab(QWidget):
         self.init_ui()
 
     def init_ui(self):
+        import matplotlib
+        matplotlib.use('QtAgg')
+        from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg as FigureCanvas
+        from matplotlib.figure import Figure
         main_layout = QHBoxLayout(self)
         
         # --- CỘT TRÁI: DANH SÁCH & BIỂU ĐỒ ---
@@ -10715,84 +10805,77 @@ def check_and_fix_db():
         print(f"❌ Lỗi kiểm tra DB: {e}")
 
 if __name__ == "__main__":
-    check_and_fix_db()
-    create_results_table(DB_PATH)
-
     import sys
     import platform
     from PyQt6.QtGui import QFont
 
-    # 1. Cấu hình High DPI (Màn hình độ phân giải cao/Retina)
+    # 1. Cấu hình High DPI
     if hasattr(Qt.ApplicationAttribute, 'AA_EnableHighDpiScaling'):
         QApplication.setAttribute(Qt.ApplicationAttribute.AA_EnableHighDpiScaling, True)
     if hasattr(Qt.ApplicationAttribute, 'AA_UseHighDpiPixmaps'):
         QApplication.setAttribute(Qt.ApplicationAttribute.AA_UseHighDpiPixmaps, True)
 
-    # 2. Khởi tạo App
+    # 2. Khởi tạo App (Đưa lên đầu để hiện Splash)
     app = QApplication(sys.argv)
-
-    # --- [BƯỚC 1] KIỂM TRA BẢN QUYỀN (CHẶN NGAY TỪ ĐẦU) ---
-    # Nếu hàm này trả về False (chưa kích hoạt/hết hạn) -> Thoát App
-    if not check_license_system():
-        sys.exit(0)
-
-    # --- [BƯỚC 2] CẤU HÌNH FONT CHỮ (FIX LỖI WARNING) ---
-    system_name = platform.system()
-    if system_name == "Darwin": # macOS
-        # Font hệ thống chuẩn của Apple
-        font = QFont(".AppleSystemUIFont", 10) 
-    elif system_name == "Windows":
-        # Font chuẩn Windows 10/11
-        font = QFont(".AppleSystemUIFont", 9) 
-    else:
-        font = QFont(".AppleSystemUIFont", 10)
-    app.setFont(font)
-
-    # --- [BƯỚC 3] KIỂM TRA & NÂNG CẤP DATABASE ---
-    # Kiểm tra file DB có tồn tại không
-    if not os.path.exists(DB_PATH):
-        # Nếu muốn tự động tạo DB mới khi chưa có, hãy bỏ comment dòng dưới
-        # create_new_database(DB_PATH) 
-        QMessageBox.warning(None, "Cảnh báo", f"Chưa tìm thấy file dữ liệu tại:\n{DB_PATH}\nVui lòng import dữ liệu sau khi vào App.")
     
-    # [QUAN TRỌNG] Gọi hàm Migration để thêm cột ID6, Lesson, q_type nếu thiếu
-    try:
-        DatabaseManager.migrate_db(DB_PATH)
-    except Exception as e:
-        print(f"Lỗi khi nâng cấp DB: {e}")
-
-    # --- [BƯỚC 4] SPLASH SCREEN & API KEY ---
-    # Tạo màn hình chờ (Splash Screen)
+    # --- SPLASH SCREEN ---
     splash = QSplashScreen()
     splash.showMessage("Đang khởi động hệ thống...", Qt.AlignmentFlag.AlignBottom | Qt.AlignmentFlag.AlignCenter, Qt.GlobalColor.black)
     splash.show()
     app.processEvents()
 
-    # Logic lấy API Key
+    # 3. Kiểm tra Database (Heavy Task)
+    check_and_fix_db()
+    create_results_table(DB_PATH)
+    
+    # 4. Kiểm tra Bản quyền
+    if not check_license_system():
+        sys.exit(0)
+
+    # 5. Cấu hình Font
+    system_name = platform.system()
+    if system_name == "Darwin": # macOS
+        font = QFont(".AppleSystemUIFont", 10) 
+    elif system_name == "Windows":
+        font = QFont(".AppleSystemUIFont", 9) 
+    else:
+        font = QFont(".AppleSystemUIFont", 10)
+    app.setFont(font)
+
+    # 6. Kiểm tra & Migrate DB
+    if not os.path.exists(DB_PATH):
+        QMessageBox.warning(None, "Cảnh báo", f"Chưa tìm thấy file dữ liệu tại:\n{DB_PATH}\nVui lòng import dữ liệu sau khi vào App.")
+    
+    try:
+        DatabaseManager.migrate_db(DB_PATH)
+    except Exception as e:
+        print(f"Lỗi khi nâng cấp DB: {e}")
+
+    # 7. Logic API Key
     saved_key = load_api_key()
     final_api_key = ""
 
     if not saved_key:
-        splash.hide() # Ẩn splash để hiện hộp thoại nhập liệu
+        splash.hide()
         key, ok = QInputDialog.getText(None, "Cấu hình", "Nhập Google Script API Key:", QLineEdit.EchoMode.Normal)
         if ok and key:
             final_api_key = key.strip()
             save_api_key(final_api_key)
-            splash.show() # Hiện lại splash
+            splash.show()
         else:
             sys.exit(0)
     else:
         final_api_key = saved_key
 
-    # --- [BƯỚC 5] KHỞI CHẠY MAIN WINDOW ---
+    # 8. Start Main Window
     try:
         window = MainApp(final_api_key)
         window.show()
-        splash.finish(window) # Đóng Splash khi cửa sổ chính hiện lên
+        splash.finish(window)
         sys.exit(app.exec())
     except Exception as e:
         splash.hide()
         import traceback
-        traceback.print_exc() # In lỗi ra console để debug
+        traceback.print_exc()
         QMessageBox.critical(None, "Lỗi Critical", f"Không thể khởi chạy ứng dụng:\n{str(e)}")
         sys.exit(1)
