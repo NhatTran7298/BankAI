@@ -1152,11 +1152,17 @@ class ExamPreparerWorker(QThread):
                     if extracted_expl:
                         explanation = extracted_expl
 
+                    # [NEW] Xử lý nội dung cho Web (Chuyển TikZ sang ảnh)
+                    web_content = LatexImageRenderer.process_content(tex)
+                    # Xử lý lời giải luôn
+                    web_expl = LatexImageRenderer.process_content(explanation)
+
                     exam_matrix.append({
                         "id": idx + 1,
                         "type": dang,
                         "key": final_key,
-                        "explanation": explanation
+                        "explanation": web_expl,
+                        "content": web_content
                     })
 
                 # 5. Compile PDF
@@ -1529,6 +1535,152 @@ __CONTENT__
             print(f"❌ Lỗi hệ thống ImageCompiler: {e}")
         
         return None
+
+class LatexImageRenderer:
+    """Xử lý nội dung LaTeX để hiển thị trên Web (Chuyển TikZ/Table sang ảnh)"""
+
+    IMG_DIR = os.path.join(CACHE_DIR, "latex_images")
+
+    @staticmethod
+    def ensure_dir():
+        if not os.path.exists(LatexImageRenderer.IMG_DIR):
+            os.makedirs(LatexImageRenderer.IMG_DIR)
+
+    @staticmethod
+    def get_image_url(filename):
+        return f"/latex_images/{filename}"
+
+    @staticmethod
+    def compile_snippet(tex_code):
+        """Biên dịch đoạn TeX thành ảnh và trả về tên file"""
+        LatexImageRenderer.ensure_dir()
+
+        # 1. Tạo Hash để caching
+        import hashlib
+        h = hashlib.md5(tex_code.encode('utf-8')).hexdigest()
+        filename = f"img_{h}.png"
+        filepath = os.path.join(LatexImageRenderer.IMG_DIR, filename)
+
+        # Nếu đã có cache -> Trả về luôn
+        if os.path.exists(filepath):
+            return filename
+
+        # 2. Nếu chưa có -> Biên dịch
+        # Dùng lại logic của ImageCompiler nhưng customize template
+        template = r"""
+\documentclass[preview,border=2pt,varwidth=100cm]{standalone}
+\usepackage[utf8]{inputenc}
+\usepackage[T5]{fontenc}
+\usepackage[vietnamese]{babel}
+\usepackage{amsmath,amssymb,mathrsfs}
+\usepackage{tikz, tkz-euclide, pgfplots, tkz-tab}
+\usepackage{tabvar}
+\usetikzlibrary{arrows, calc, intersections, angles, quotes, backgrounds, shapes.geometric, patterns}
+\pgfplotsset{compat=1.18}
+\usepackage{xcolor}
+\definecolor{mainbrown}{HTML}{582704}
+\begin{document}
+__CONTENT__
+\end{document}
+"""
+        full_tex = template.replace("__CONTENT__", tex_code)
+
+        build_dir = os.path.join(os.path.expanduser("~"), ".bankai_build_web")
+        if not os.path.exists(build_dir): os.makedirs(build_dir)
+
+        tex_path = os.path.join(build_dir, f"temp_{h}.tex")
+        pdf_path = os.path.join(build_dir, f"temp_{h}.pdf")
+
+        try:
+            with open(tex_path, "w", encoding="utf-8") as f: f.write(full_tex)
+
+            subprocess.run(
+                ["pdflatex", "-interaction=nonstopmode", f"-output-directory={build_dir}", tex_path],
+                stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=20
+            )
+
+            if os.path.exists(pdf_path):
+                from pdf2image import convert_from_path
+                images = convert_from_path(pdf_path, dpi=300) # DPI 300 cho nét
+                if images:
+                    img = images[0]
+                    img.save(filepath, "PNG")
+                    return filename
+        except Exception as e:
+            print(f"Lỗi render ảnh web: {e}")
+
+        return None
+
+    @staticmethod
+    def process_content(content):
+        """Quét và thay thế các block TeX phức tạp bằng thẻ <img>"""
+        if not content: return ""
+
+        new_content = content
+
+        # 1. Xử lý Môi trường (TikZ, Tabular...)
+        envs = ["tikzpicture", "tabvar", "tabular"]
+
+        for env in envs:
+            # Regex: \begin{env}...\end{env} (Non-greedy)
+            pattern = re.compile(r"(\\begin\{" + env + r"\}.*?\\end\{" + env + r"\})", re.DOTALL)
+
+            matches = pattern.findall(new_content)
+            for match in matches:
+                img_file = LatexImageRenderer.compile_snippet(match)
+                if img_file:
+                    url = LatexImageRenderer.get_image_url(img_file)
+                    # Thay thế bằng thẻ IMG
+                    img_tag = f'<img src="{url}" class="latex-img block mx-auto my-2" />'
+                    new_content = new_content.replace(match, img_tag)
+
+        # 2. Xử lý \includegraphics
+        # Pattern: \includegraphics[...]{...}
+        pattern_img = re.compile(r"\\includegraphics(?:\[.*?\])?\{(.*?)\}")
+
+        def repl_img(m):
+            path = m.group(1).strip()
+            # Xử lý các ký tự lạ nếu có
+            path = path.replace('"', '').replace("'", "")
+
+            # [SECURITY] Chỉ cho phép file ảnh
+            valid_exts = ['.png', '.jpg', '.jpeg', '.pdf', '.svg']
+            root, ext = os.path.splitext(path)
+            if ext.lower() not in valid_exts:
+                return f'<span style="color:red; font-size:12px">[Blocked: File type {ext} not allowed]</span>'
+
+            if os.path.exists(path):
+                # Copy và Hash
+                import shutil
+                import hashlib
+
+                if not ext: ext = ".png"
+
+                # Hash path + mtime
+                try:
+                    f_stat = os.stat(path)
+                    key = f"{path}_{f_stat.st_mtime}"
+                except:
+                    key = path
+
+                h = hashlib.md5(key.encode()).hexdigest()
+                new_name = f"ext_{h}{ext}"
+
+                LatexImageRenderer.ensure_dir()
+                dest = os.path.join(LatexImageRenderer.IMG_DIR, new_name)
+
+                if not os.path.exists(dest):
+                    try: shutil.copy2(path, dest)
+                    except: pass
+
+                url = LatexImageRenderer.get_image_url(new_name)
+                return f'<img src="{url}" class="latex-img-inc block mx-auto my-2" style="max-width:100%;" />'
+            else:
+                return f'<span style="color:red; font-size:12px">[Ảnh lỗi: {os.path.basename(path)}]</span>'
+
+        new_content = pattern_img.sub(repl_img, new_content)
+
+        return new_content
 
 class GoogleManagerFull:
     # Scope đầy đủ cho: Classroom, Drive và Google Forms
@@ -4882,7 +5034,16 @@ WEB_UI_TEMPLATE = """
     <script>
     window.MathJax = {
       tex: {
-        inlineMath: [['$', '$'], ['\\(', '\\)']]
+        inlineMath: [['$', '$'], ['\\(', '\\)']],
+        macros: {
+            choice: ["\\begin{array}{llll} \\textbf{A. } #1 & \\textbf{B. } #2 & \\textbf{C. } #3 & \\textbf{D. } #4 \\end{array}", 4],
+            choiceTF: ["\\begin{itemize} \\item a) #1 \\item b) #2 \\item c) #3 \\item d) #4 \\end{itemize}", 4],
+            shortans: ["\\textbf{Đáp án:} \\underline{#1}", 1],
+            True: "\\checkmark",
+            vec: ["\\overrightarrow{#1}", 1],
+            heva: ["\\left\\{\\begin{aligned}#1\\end{aligned}\\right.", 1],
+            hoac: ["\\left[\\begin{aligned}#1\\end{aligned}\\right.", 1]
+        }
       }
     };
     </script>
@@ -4949,7 +5110,10 @@ WEB_UI_TEMPLATE = """
     </div>
 
     <div id="exam-ui" class="hidden">
-        <div class="left-panel"><iframe id="pdf-frame"></iframe></div>
+        <div class="left-panel relative">
+             <iframe id="pdf-frame" class="w-full h-full absolute inset-0 hidden"></iframe>
+             <div id="web-view" class="w-full h-full absolute inset-0 overflow-y-auto p-5 bg-white pb-20 hidden text-lg"></div>
+        </div>
         <div class="right-panel">
              <div class="bg-gray-800 text-white p-3 flex justify-between items-center shadow-md z-10">
                 <div><div class="text-xs opacity-70">THỜI GIAN</div><div class="text-2xl font-mono font-bold text-yellow-400" id="timer">--:--</div></div>
@@ -5064,9 +5228,56 @@ WEB_UI_TEMPLATE = """
             examData = data;
             document.getElementById('login-screen').style.display = 'none';
             document.getElementById('exam-ui').classList.remove('hidden');
-            if(data.pdf_filename) document.getElementById('pdf-frame').src = '/api/pdf/' + data.pdf_filename;
+
+            const webView = document.getElementById('web-view');
+            const pdfFrame = document.getElementById('pdf-frame');
+
+            // Ưu tiên chế độ Web View nếu có dữ liệu content
+            if (data.exam_matrix && data.exam_matrix.some(q => q.content)) {
+                webView.classList.remove('hidden');
+                pdfFrame.classList.add('hidden');
+                renderQuestions(data.exam_matrix);
+            } else if(data.pdf_filename) {
+                webView.classList.add('hidden');
+                pdfFrame.classList.remove('hidden');
+                pdfFrame.src = '/api/pdf/' + data.pdf_filename;
+            }
+
             if(data.duration) { timeLeft = parseInt(data.duration); startTimer(); }
             renderSheet(data.exam_matrix || []);
+        }
+
+        function renderQuestions(matrix) {
+            const container = document.getElementById('web-view');
+            container.innerHTML = "";
+
+            matrix.forEach((q, index) => {
+                const item = document.createElement('div');
+                item.className = "mb-8 p-4 border-b border-gray-300";
+                item.id = "q-content-" + q.id;
+
+                // Header
+                const header = document.createElement('div');
+                header.className = "font-bold text-blue-800 mb-3 text-xl";
+                header.innerText = `Câu ${index + 1} (ID: ${q.id}):`;
+                item.appendChild(header);
+
+                // Content
+                const content = document.createElement('div');
+                content.className = "text-gray-900 leading-loose";
+
+                let html = q.content || "";
+                // Remove wrappers that might confuse display
+                html = html.replace(/\\begin\{ex\}/g, '').replace(/\\end\{ex\}/g, '');
+
+                content.innerHTML = html;
+                item.appendChild(content);
+                container.appendChild(item);
+            });
+
+            if (window.MathJax && MathJax.typesetPromise) {
+                MathJax.typesetPromise([container]);
+            }
         }
         
         var savedReviewData = null;
@@ -5513,6 +5724,11 @@ class WebServerThread(QThread):
         # 1. Cấu hình FastAPI
         app = FastAPI()
         app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_credentials=True, allow_methods=["*"], allow_headers=["*"])
+
+        # [NEW] Mount thư mục ảnh LaTeX
+        from fastapi.staticfiles import StaticFiles
+        LatexImageRenderer.ensure_dir()
+        app.mount("/latex_images", StaticFiles(directory=LatexImageRenderer.IMG_DIR), name="latex_images")
 
         # URL ĐỘNG: /exam/{exam_id} -> Trả về giao diện thi
         @app.get("/exam/{exam_id}")
