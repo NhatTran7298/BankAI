@@ -755,7 +755,7 @@ LATEX_TEMPLATE = r"""
 \usepackage[utf8]{inputenc}
 \usepackage[T5]{fontenc}
 \usepackage[shorthands=off,vietnamese]{babel}
-\usepackage{amsmath,amssymb,mathrsfs}
+\usepackage{amsmath,amssymb,mathrsfs,mathabx}
 \usepackage{geometry}
 \geometry{top=1.5cm, bottom=1.5cm, left=2cm, right=1.5cm} % Căn lề rộng để dễ đọc trên web
 
@@ -1452,9 +1452,9 @@ class ImageCompiler:
 \documentclass[preview,border=3pt,varwidth=18cm]{standalone} % Dùng varwidth để gói văn bản dài
 \usepackage[utf8]{inputenc}   
 \usepackage[T5]{fontenc}      
-\usepackage[vietnamese]{babel}
+\usepackage[shorthands=off,vietnamese]{babel}
 \usepackage{amsmath,amssymb,mathrsfs,mathabx}
-\usepackage{tikz, tkz-euclide, pgfplots, tikz-3dplot}
+\usepackage{tikz, tkz-euclide, pgfplots, tikz-3dplot, tkz-tab, tabvar}
 \usepackage[most]{tcolorbox}
 \usepackage{esvect}
 
